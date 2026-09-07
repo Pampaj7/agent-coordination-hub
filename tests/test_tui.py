@@ -149,6 +149,7 @@ def test_the_dashboard_never_writes(cli: TestClient) -> None:
         "/coordination/summary",
         "/agents",
         "/events",
+        "/priorities",
     }
 
 
@@ -159,7 +160,8 @@ def test_fetch_frame_skips_project_scoped_endpoints_when_there_is_no_project(
     frame = tui.fetch_frame(RelayClient())
     assert frame.focus_project is None
     assert frame.context == {} and frame.summary == {}
-    assert [path for _, path in CALLS] == ["/tasks", "/agents", "/events"]
+    # /priorities is deliberately not project-scoped: a person's plate spans projects.
+    assert [path for _, path in CALLS] == ["/tasks", "/agents", "/events", "/priorities"]
 
 
 # --- project focus ----------------------------------------------------------

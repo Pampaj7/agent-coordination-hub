@@ -675,6 +675,40 @@ def inbox(
 
 
 @app.command()
+def priorities(
+    project: Annotated[str | None, typer.Option("--project", "-p")] = None,
+    owner: Annotated[
+        str | None, typer.Option("--owner", help="Show only this person's list.")
+    ] = None,
+    all_items: Annotated[
+        bool,
+        typer.Option("--all", help="Include work that is simply in progress."),
+    ] = False,
+    as_json: JsonOpt = False,
+) -> None:
+    """Who should do what next, ranked by who pays for the delay.
+
+    `inbox` answers "what needs me". This answers "of all of us, who is holding up
+    whom" — an unanswered question outranks your own blocked task, because the first
+    costs two people's time and the second costs one.
+    """
+    try:
+        payload = _client().get("/priorities", project=project, include_in_progress=all_items)
+    except RelayError as exc:
+        _fail(exc)
+        return
+    if owner:
+        wanted = owner.lower()
+        payload = dict(payload)
+        payload["owners"] = [
+            row
+            for row in (payload.get("owners") or [])
+            if str(row.get("owner", "")).lower() == wanted
+        ]
+    _emit(payload, render.render_priorities(payload), as_json)
+
+
+@app.command()
 def wait(
     agent: AgentOpt = None,
     project: Annotated[str | None, typer.Option("--project", "-p")] = None,

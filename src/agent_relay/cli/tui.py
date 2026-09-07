@@ -120,6 +120,7 @@ class Frame:
     agents: list[dict[str, Any]] = field(default_factory=list)
     events: list[dict[str, Any]] = field(default_factory=list)
     tasks: list[dict[str, Any]] = field(default_factory=list)
+    priorities: dict[str, Any] = field(default_factory=dict)
 
 
 def busiest_project(tasks: list[dict[str, Any]]) -> str | None:
@@ -161,6 +162,9 @@ def fetch_frame(
 
     agents: list[dict[str, Any]] = client.get("/agents", project=project) or []
     events: list[dict[str, Any]] = client.get("/events", project=project, limit=event_limit) or []
+    # Unscoped by project on purpose: "what should I do next" is a question about a
+    # person's whole plate, and an obligation in another project is still theirs.
+    priorities: dict[str, Any] = client.get("/priorities") or {}
 
     return Frame(
         base_url=client.base_url,
@@ -172,6 +176,7 @@ def fetch_frame(
         agents=agents,
         events=events,
         tasks=tasks,
+        priorities=priorities,
     )
 
 
@@ -346,6 +351,70 @@ def render_agents(agents: list[dict[str, Any]]) -> Panel:
     return _panel("👥 WHO IS WORKING", table, style="cyan")
 
 
+#: Glyph per obligation kind. Bands 1-3 are things other people are waiting on.
+PRIORITY_GLYPHS = {
+    "question": "❓",
+    "stale_claim": "🕸️",
+    "handoff": "🤝",
+    "blocked": "🚧",
+    "in_progress": "🔒",
+}
+
+#: How many items to show per person before collapsing the rest into a count. The
+#: point of this panel is the top of each list; a full backlog belongs in `inbox`.
+PRIORITY_ITEMS_SHOWN = 3
+
+
+def render_priorities(board: dict[str, Any]) -> Panel:
+    """What each person should do next, most-blocking person first.
+
+    Every other panel is organised by thing. This one is organised by person, which
+    is the question three people sharing a relay actually ask.
+    """
+    owners = board.get("owners") or []
+    if not owners:
+        return _panel(
+            "🎯 WHOSE MOVE",
+            Text("✅ Nothing is waiting on anybody — no open obligations"),
+            style="magenta",
+        )
+
+    table = _grid(("", 2), ("WHO / WHAT", 34), ("WHY", None))
+    for index, owner in enumerate(owners):
+        if index:
+            table.add_row(Text(""), Text(""), Text(""))
+        items = owner.get("items") or []
+        blocking = int(owner.get("blocking_others") or 0)
+        # The count of people-blocking items is the number that decides whose list
+        # to read first, so it sits on the name rather than inside the list.
+        tally = (
+            Text(f" · {blocking} blocking others", style="bold red")
+            if blocking
+            else Text(f" · {len(items)} open", style="dim")
+        )
+        name = Text(str(owner.get("owner") or "?"), style="bold")
+        name.append_text(tally)
+        table.add_row(Text("👤"), name, Text(""))
+
+        for item in items[:PRIORITY_ITEMS_SHOWN]:
+            kind = str(item.get("kind") or "")
+            headline = Text("  ")
+            headline.append_text(_cell(item.get("headline"), 30))
+            table.add_row(
+                Text(PRIORITY_GLYPHS.get(kind, "•")),
+                headline,
+                _cell(item.get("why"), SUMMARY_WIDTH, style="dim", empty=""),
+            )
+        if len(items) > PRIORITY_ITEMS_SHOWN:
+            rest = len(items) - PRIORITY_ITEMS_SHOWN
+            table.add_row(
+                Text(""),
+                Text(f"  +{rest} more", style="dim"),
+                Text("agent-relay priorities", style="dim"),
+            )
+    return _panel("🎯 WHOSE MOVE", table, style="magenta")
+
+
 def render_activity(events: list[dict[str, Any]]) -> Panel:
     """The stream. Newest first, because that is the order you scan a pane in."""
     if not events:
@@ -449,6 +518,9 @@ def render_dashboard(
     return Group(
         render_header(status),
         render_stats(frame.context, frame.agents),
+        # Full width and above the split: it is the answer to "what do I do now",
+        # and it must not compete for a column with the ambient panels.
+        render_priorities(frame.priorities),
         _Responsive(frame),
         render_actions(frame.summary),
     )

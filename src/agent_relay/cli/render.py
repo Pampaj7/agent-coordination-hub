@@ -392,3 +392,46 @@ def render_inbox(inbox: dict[str, Any]) -> str:
     if holding:
         out.append("\nHOLDING: " + ", ".join(holding))
     return "\n".join(out)
+
+
+#: Same glyphs as the dashboard so the two views are recognisably the same data.
+PRIORITY_GLYPHS = {
+    "question": "❓",
+    "stale_claim": "🕸️",
+    "handoff": "🤝",
+    "blocked": "🚧",
+    "in_progress": "🔒",
+}
+
+
+def render_priorities(board: dict[str, Any]) -> str:
+    """One ranked list per person, most-blocking person first.
+
+    Prints the full list rather than the dashboard's top three: this is the command
+    you run when you have decided to actually work through your plate.
+    """
+    owners = board.get("owners") or []
+    if not owners:
+        return "✅ Nothing is waiting on anybody — no open obligations."
+
+    rows: list[str] = []
+    for owner in owners:
+        items = owner.get("items") or []
+        blocking = int(owner.get("blocking_others") or 0)
+        # The blocking count goes on the name because it is what decides whose list
+        # to read first — not a detail of any single item.
+        tally = f"{blocking} blocking others" if blocking else f"{len(items)} open"
+        agents = ", ".join(owner.get("agents") or []) or "-"
+        rows.append("")
+        rows.append(f"👤 {owner.get('owner')}  ({tally})")
+        rows.append(f"   agents: {agents}")
+        for item in items:
+            glyph = PRIORITY_GLYPHS.get(str(item.get("kind") or ""), "•")
+            task = item.get("task") or item.get("project") or "-"
+            age = item.get("age_hours")
+            age_text = f"{age}h" if isinstance(age, int | float) else "-"
+            rows.append(f"   {glyph} [{task}] {item.get('headline')}")
+            rows.append(f"      why: {item.get('why')}  ({age_text} old)")
+            if do_next := item.get("do_next"):
+                rows.append(f"      → {do_next}")
+    return "\n".join(rows).lstrip("\n")

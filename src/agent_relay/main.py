@@ -21,6 +21,7 @@ from agent_relay.api.routes_dashboard import router as dashboard_router
 from agent_relay.api.routes_github_hooks import router as github_hooks_router
 from agent_relay.api.routes_inbox import router as inbox_router
 from agent_relay.api.routes_presence import router as presence_router
+from agent_relay.api.routes_priorities import router as priorities_router
 from agent_relay.api.routes_slack_hooks import router as slack_hooks_router
 from agent_relay.api.routes_v2 import (
     a2a_router,
@@ -84,6 +85,7 @@ def create_app() -> FastAPI:
     app.include_router(presence_router)
     app.include_router(coordinator_router)
     app.include_router(inbox_router)
+    app.include_router(priorities_router)
     app.include_router(github_hooks_router)
     app.include_router(slack_hooks_router)
     app.include_router(dashboard_router)
