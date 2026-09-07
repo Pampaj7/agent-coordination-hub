@@ -29,7 +29,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 from agent_relay.db.models import Event, TaskClaim, utcnow
 from agent_relay.models.enums import UNBLOCKING_EVENTS, WORK_EVENTS, EventType
@@ -69,9 +69,24 @@ class TaskState:
 
 
 def fetch_events(
-    session: Session, project: str | None = None, since: dt.datetime | None = None
+    session: Session,
+    project: str | None = None,
+    since: dt.datetime | None = None,
+    *,
+    defer_payloads: bool = False,
 ) -> list[Event]:
+    """Read the log, oldest first.
+
+    ``defer_payloads`` leaves the large JSON columns unloaded. The task/blocked/conflict
+    fold never reads them, and at a hundred thousand events they are most of the bytes.
+    They stay lazily loadable, so a caller that touches one still gets it — just not for
+    every row up front.
+    """
     stmt = select(Event)
+    if defer_payloads:
+        stmt = stmt.options(
+            defer(Event.artifacts_json), defer(Event.metadata_json), defer(Event.details_json)
+        )
     if project:
         stmt = stmt.where(Event.project == project)
     if since:
@@ -172,9 +187,16 @@ def build_tasks(
     status: str | None = None,
     github: GitHubService | None = None,
     limit: int = 200,
+    events: list[Event] | None = None,
 ) -> list[TaskOut]:
-    """The ``GET /tasks`` view: every task the relay has heard about."""
-    events = fetch_events(session, project=project)
+    """The ``GET /tasks`` view: every task the relay has heard about.
+
+    ``events`` lets a caller that has already read the log hand it over. ``/context``
+    needs both this view and the raw log, and fetching it twice doubled the cost of the
+    single most-polled endpoint in the system.
+    """
+    if events is None:
+        events = fetch_events(session, project=project, defer_payloads=True)
     states = build_task_states(events)
     active = claims_by_task(list_active_claims(session, project=project))
 

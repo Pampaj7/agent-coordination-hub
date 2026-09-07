@@ -43,7 +43,10 @@ def build_context(
     windowed = [e for e in all_events if e.created_at >= window_start]
 
     claims = list_active_claims(session, project=project)
-    task_rows = state_service.build_tasks(session, project=project, github=github)
+    # Reuse the log we just read rather than scanning it a second time.
+    task_rows = state_service.build_tasks(
+        session, project=project, github=github, events=all_events
+    )
     blocked = [row for row in task_rows if row.blocked]
 
     # Unresolved questions are checked against the whole log: an old unanswered

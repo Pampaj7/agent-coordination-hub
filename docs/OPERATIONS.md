@@ -352,6 +352,37 @@ Nothing in the database depends on any of these, so rotation is always "edit `.e
 
 ---
 
+### 4.6 How it scales, measured
+
+The coordination rules fold over a project's event log, so cost grows with the log, not
+with the number of agents. Measured on a laptop-class SSD with realistic payloads
+(every event carrying findings, artifacts and metadata):
+
+| events in one project | `/context` | `/tasks` | `/coordination/summary` | `/coordination/overview` |
+|---|---|---|---|---|
+| 10,000 | 25 ms | 15 ms | 22 ms | 74 ms |
+| 50,000 | 160 ms | 91 ms | 155 ms | 494 ms |
+| 200,000 | 708 ms | 416 ms | 694 ms | 2.1 s |
+
+Five agents posting fifty events a day reach ~90,000 events a year, so a team stays in
+the comfortable band for a long time. Two things to know before you leave it:
+
+* **`/context` and `/tasks` are polled**, by the TUI every 10s and the web dashboard
+  every 15s. Those are the numbers that matter; `/coordination/overview` is a
+  once-a-morning endpoint and can afford to be slower.
+* **`/coordination/overview` costs one fold per project**, so it grows with projects
+  *and* log length. It is the first thing that will feel slow.
+
+If you outgrow this, the fix is not an index — it is to stop folding the whole log:
+the blocked rule only needs the newest `BLOCKED` and the newest unblocking event per
+task, and unresolved questions only need `QUESTION` and `ANSWER` rows. Both are
+expressible as grouped queries, turning the fold into O(window + tasks). That was left
+undone deliberately: it trades the current rules' obviousness for speed nobody needs
+yet, and those rules are the part of the system that has to stay auditable.
+
+`tests/test_query_cost.py` pins the structural properties that matter — each endpoint
+reads the log exactly once, and the task fold does not load the JSON payload columns.
+
 ## 5. Backup and restore
 
 The entire state is the SQLite file. Losing it loses the event log; nothing else is durable.
