@@ -275,3 +275,62 @@ def render_health(health: dict[str, Any]) -> str:
         f"github   : {integrations.get('github')}\n"
         f"auth     : {integrations.get('auth')}"
     )
+
+
+PRESENCE_GLYPHS = {"online": "🟢", "idle": "🟡", "offline": "🔴", "unknown": "⚪"}
+
+
+def render_agents(agents: list[dict[str, Any]]) -> str:
+    if not agents:
+        return "(no agents have been seen yet)"
+    header = f"{'AGENT':<20} {'STATUS':<10} {'OWNER':<12} {'SEEN':>6}  TASKS"
+    rows = [header, "-" * len(header)]
+    for agent in agents:
+        status = str(agent.get("status", "unknown"))
+        glyph = PRESENCE_GLYPHS.get(status, "?")
+        seconds = agent.get("seconds_since_heartbeat")
+        seen = "-" if seconds is None else f"{int(seconds)}s"
+        name = str(agent.get("agent", ""))
+        owner = str(agent.get("human_owner") or "-")
+        tasks = ", ".join(agent.get("active_claims") or []) or "-"
+        rows.append(f"{name:<20} {glyph + ' ' + status:<10} {owner:<12} {seen:>6}  {tasks}")
+        if note := agent.get("status_note"):
+            rows.append(f"{'':<20} {note}")
+    return "\n".join(rows)
+
+
+def render_stale(claims: list[dict[str, Any]]) -> str:
+    if not claims:
+        return "✅ No stale claims — every active claim has recent activity."
+    rows = ["⚠️  STALE CLAIMS"]
+    for claim in claims:
+        flag = " (owner offline)" if claim.get("owner_offline") else ""
+        rows.append(
+            f"  {claim.get('task'):<12} {claim.get('agent')}{flag}"
+            f"  idle {claim.get('idle_hours')}h  [{claim.get('owner_status', '?')}]"
+        )
+    return "\n".join(rows)
+
+
+def render_sweep(report: dict[str, Any]) -> str:
+    released = report.get("released") or []
+    still = report.get("still_stale") or []
+    rows = [f"Swept: {len(released)} released, {len(still)} still stale."]
+    for claim in released:
+        rows.append(f"  🔓 released {claim.get('task')} (was {claim.get('agent')})")
+    for claim in still:
+        rows.append(
+            f"  ⚠️  {claim.get('task')} held by {claim.get('agent')} idle {claim.get('idle_hours')}h"
+        )
+    for err in report.get("errors") or []:
+        rows.append(f"  ❌ {err}")
+    return "\n".join(rows)
+
+
+def render_brief(result: dict[str, Any]) -> str:
+    source = result.get("source", "?")
+    tag = f"{result.get('model')}" if source == "llm" else "rule-based"
+    return (
+        f"=== BRIEF · {result.get('project')} (last {result.get('window_hours')}h · {tag}) ===\n\n"
+        f"{result.get('brief', '')}"
+    )

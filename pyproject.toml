@@ -15,8 +15,16 @@ dependencies = [
     "typer>=0.15",
 ]
 
+[project.optional-dependencies]
+# The LLM coordinator. Optional so the base install stays as small as V1's.
+coordinator = ["anthropic>=0.69"]
+# MCP server, so Claude Code / Codex get relay tools natively.
+mcp = ["mcp>=1.9"]
+all = ["anthropic>=0.69", "mcp>=1.9"]
+
 [project.scripts]
 agent-relay = "agent_relay.cli.main:main"
+agent-relay-mcp = "agent_relay.mcp.server:main"
 
 [dependency-groups]
 dev = [
@@ -48,7 +56,9 @@ strict = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["uvicorn.*"]
+# Optional extras: these are only importable when the matching extra is installed,
+# and the code guards every import, so a missing stub is expected, not a defect.
+module = ["uvicorn.*", "anthropic.*", "mcp.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

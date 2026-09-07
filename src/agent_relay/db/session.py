@@ -11,7 +11,7 @@ from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
 from agent_relay.config import Settings, get_settings, redact_db_url
-from agent_relay.db.models import Base
+from agent_relay.db.migrate import migrate
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +58,8 @@ def init_db(settings: Settings | None = None) -> Engine:
         _engine = create_db_engine(settings.db_url)
         _SessionFactory = sessionmaker(bind=_engine, expire_on_commit=False, future=True)
         logger.info("database ready at %s", redact_db_url(settings.db_url))
-    Base.metadata.create_all(_engine)
+    # create_all + additive ALTERs, so a v1 database keeps its history on upgrade.
+    migrate(_engine)
     return _engine
 
 

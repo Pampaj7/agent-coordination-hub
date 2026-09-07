@@ -16,6 +16,31 @@ def test_health_reports_disabled_integrations(client: TestClient) -> None:
     assert body["integrations"]["auth"] == "open"
 
 
+def test_health_lists_every_integration_state(client: TestClient) -> None:
+    """Ops reads this to answer "is the bot on?" without grepping the config."""
+    integrations = client.get("/health").json()["integrations"]
+    expected = {
+        "slack",
+        "slack_bot",
+        "slack_events",
+        "github",
+        "github_webhooks",
+        "github_polling",
+        "coordinator_llm",
+        "auto_release",
+        "dashboard",
+        "auth",
+        "db_url",
+    }
+    assert expected <= set(integrations)
+    # Everything optional is off in a default relay.
+    assert integrations["slack_bot"] == "disabled"
+    assert integrations["github_webhooks"] == "disabled"
+    assert integrations["coordinator_llm"] == "disabled"
+    assert integrations["auto_release"] == "disabled"
+    assert integrations["dashboard"] == "enabled"
+
+
 def test_create_event_round_trips_every_field(client: TestClient) -> None:
     created = post_event(client)
 

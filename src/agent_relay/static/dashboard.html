@@ -1,0 +1,755 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Relay — Dashboard</title>
+<!--
+  One self-contained file: inline CSS, inline vanilla JS, zero external requests.
+  This project has no frontend toolchain on purpose, and the relay is expected to run
+  on a laptop with no internet. Nothing here may reach off-box.
+-->
+<style>
+  /* Light palette. Dark mode only overrides these tokens, never the rules below. */
+  :root {
+    color-scheme: light dark;
+    --bg: #f5f6f8;
+    --panel: #ffffff;
+    --panel-alt: #f0f2f5;
+    --border: #d8dce3;
+    --text: #16191d;
+    --muted: #5b6472;
+    --link: #0b5ed7;
+    --accent: #2f6f4f;
+    --danger: #a32222;
+    --danger-bg: #fdecec;
+    --warn: #8a5a00;
+    --warn-bg: #fdf4e0;
+    --ok-bg: #e9f3ec;
+    --focus: #0b5ed7;
+    --shadow: 0 1px 2px rgba(16, 20, 26, .08);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171c;
+      --panel: #1c2027;
+      --panel-alt: #232831;
+      --border: #333a45;
+      --text: #e6e9ee;
+      --muted: #9aa4b2;
+      --link: #7bb0ff;
+      --accent: #7fcfa4;
+      --danger: #ff9c9c;
+      --danger-bg: #33201f;
+      --warn: #f0c674;
+      --warn-bg: #322a17;
+      --ok-bg: #1e2a23;
+      --focus: #7bb0ff;
+      --shadow: none;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    /* Wide content (event summaries, branch names) wraps instead of scrolling the page. */
+    overflow-wrap: anywhere;
+  }
+  a { color: var(--link); }
+  a:hover { text-decoration: none; }
+  :focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+    border-radius: 3px;
+  }
+
+  /* ------------------------------------------------------------------ header */
+  .topbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px 20px;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 20px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 5;
+  }
+  .brand { display: flex; align-items: center; gap: 9px; }
+  .brand h1 { font-size: 17px; margin: 0; letter-spacing: -.01em; }
+  .brand .sub { color: var(--muted); font-size: 13px; }
+  .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+  .controls label { color: var(--muted); font-size: 13px; }
+  select, button, input {
+    font: inherit;
+    color: var(--text);
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 9px;
+  }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--muted); }
+  .stamp { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+
+  /* ------------------------------------------------------------- banners */
+  .notice {
+    margin: 10px 20px 0;
+    padding: 9px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    font-size: 14px;
+  }
+  .notice.error { background: var(--danger-bg); border-color: var(--danger); color: var(--danger); }
+  .notice.auth { background: var(--warn-bg); border-color: var(--warn); }
+  .auth-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
+  .auth-form input { min-width: 220px; flex: 1 1 220px; background: var(--panel); }
+
+  /* -------------------------------------------------------------- layout */
+  main { padding: 16px 20px 40px; max-width: 1400px; margin: 0 auto; }
+  .tiles {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 12px;
+    margin-bottom: 18px;
+  }
+  .tile {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 14px;
+    box-shadow: var(--shadow);
+  }
+  .tile .value { font-size: 26px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .tile .label { color: var(--muted); font-size: 13px; }
+  .tile.alert .value { color: var(--danger); }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+    gap: 16px;
+    align-items: start;
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+  .panel.wide { grid-column: 1 / -1; }
+  .panel > h2 {
+    font-size: 14px;
+    margin: 0;
+    padding: 11px 14px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel-alt);
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+  }
+  .panel > h2 .count { color: var(--muted); font-weight: 400; font-size: 13px; }
+  .body { padding: 4px 0; }
+  .empty { padding: 14px; color: var(--muted); font-size: 14px; }
+
+  /* ---------------------------------------------------------------- rows */
+  ul.rows { list-style: none; margin: 0; padding: 0; }
+  ul.rows > li {
+    padding: 10px 14px;
+    border-top: 1px solid var(--border);
+  }
+  ul.rows > li:first-child { border-top: none; }
+  .line { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; }
+  .who { font-weight: 600; }
+  .summary { margin-top: 3px; }
+  .meta { color: var(--muted); font-size: 13px; }
+  .glyph { font-size: 15px; }
+  code, .task {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 13px;
+  }
+  .task {
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 1px 6px;
+    white-space: nowrap;
+  }
+  .pill {
+    font-size: 12px;
+    border-radius: 999px;
+    padding: 1px 9px;
+    border: 1px solid var(--border);
+    background: var(--panel-alt);
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  /* Colour is never the only signal: every state pill also carries an emoji + word. */
+  .pill.blocked { background: var(--danger-bg); color: var(--danger); border-color: var(--danger); }
+  .pill.question { background: var(--warn-bg); color: var(--warn); border-color: var(--warn); }
+  .pill.claimed { background: var(--ok-bg); color: var(--accent); border-color: var(--accent); }
+  .reason { color: var(--danger); }
+
+  @media (max-width: 560px) {
+    .topbar { padding: 10px 12px; }
+    main { padding: 12px 12px 32px; }
+    .notice { margin: 10px 12px 0; }
+    .tiles { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
+    .grid { grid-template-columns: 1fr; }
+    .tile .value { font-size: 22px; }
+  }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="glyph" aria-hidden="true">🛰️</span>
+    <h1>Agent Relay</h1>
+    <span class="sub">who is working on what, and what is stuck</span>
+  </div>
+  <div class="controls">
+    <label for="project-select">Project</label>
+    <select id="project-select"><option value="">All projects</option></select>
+
+    <label for="interval-select">Every</label>
+    <select id="interval-select">
+      <option value="5">5s</option>
+      <option value="15" selected>15s</option>
+      <option value="30">30s</option>
+      <option value="60">60s</option>
+    </select>
+
+    <button id="pause-button" type="button" aria-pressed="false">⏸ Pause</button>
+    <button id="refresh-button" type="button">↻ Refresh now</button>
+    <span id="stamp" class="stamp" role="status" aria-live="polite">loading…</span>
+  </div>
+</header>
+
+<div id="error-banner" class="notice error" role="alert" hidden></div>
+
+<div id="auth-banner" class="notice auth" hidden>
+  <strong>🔐 This relay requires a token.</strong>
+  The dashboard never embeds the server's token; paste it here and it is kept in this
+  browser only (<code>localStorage</code>), never sent anywhere but this relay.
+  <form class="auth-form" id="auth-form">
+    <label for="token-input">API token</label>
+    <input id="token-input" type="password" autocomplete="off" spellcheck="false"
+           placeholder="AGENT_RELAY_API_TOKEN">
+    <button type="submit">Save</button>
+    <button type="button" id="token-clear">Forget</button>
+  </form>
+</div>
+
+<main>
+  <section class="tiles" aria-label="At a glance">
+    <div class="tile">
+      <div class="value" id="tile-claims" aria-live="polite">–</div>
+      <div class="label">🔒 Active claims</div>
+    </div>
+    <div class="tile" id="tile-blocked-box">
+      <div class="value" id="tile-blocked" aria-live="polite">–</div>
+      <div class="label">🚧 Blocked tasks</div>
+    </div>
+    <div class="tile" id="tile-questions-box">
+      <div class="value" id="tile-questions" aria-live="polite">–</div>
+      <div class="label">❓ Open questions</div>
+    </div>
+    <div class="tile">
+      <div class="value" id="tile-agents" aria-live="polite">–</div>
+      <div class="label">🤖 Agents seen</div>
+    </div>
+  </section>
+
+  <div class="grid">
+    <!-- Needs-attention panels come first, on purpose. -->
+    <section class="panel" aria-labelledby="h-blocked">
+      <h2 id="h-blocked"><span aria-hidden="true">🚧</span> Blocked <span class="count" id="count-blocked"></span></h2>
+      <div class="body" id="blocked" aria-live="polite"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="h-questions">
+      <h2 id="h-questions"><span aria-hidden="true">❓</span> Open questions <span class="count" id="count-questions"></span></h2>
+      <div class="body" id="questions" aria-live="polite"></div>
+    </section>
+
+    <section class="panel wide" aria-labelledby="h-claims">
+      <h2 id="h-claims"><span aria-hidden="true">🔒</span> Active claims <span class="count" id="count-claims"></span></h2>
+      <div class="body" id="claims" aria-live="polite"></div>
+    </section>
+
+    <section class="panel wide" aria-labelledby="h-activity">
+      <h2 id="h-activity"><span aria-hidden="true">🔄</span> Recent activity <span class="count" id="count-activity"></span></h2>
+      <div class="body" id="activity" aria-live="polite"></div>
+    </section>
+
+    <section class="panel wide" aria-labelledby="h-actions">
+      <h2 id="h-actions"><span aria-hidden="true">📌</span> Suggested actions <span class="count" id="count-actions"></span></h2>
+      <div class="body" id="actions" aria-live="polite"></div>
+    </section>
+  </div>
+</main>
+
+<script>
+(function () {
+  "use strict";
+
+  // ---------------------------------------------------------------- constants
+  var TOKEN_KEY = "agent_relay_token";
+  var EVENT_LIMIT = 60;
+  // /context and /coordination/summary take a *required* project. In "all projects"
+  // mode we fan out over the known projects; a relay tracks a handful, and the cap
+  // keeps a surprise (someone scripting 200 project names) from melting the browser.
+  var MAX_FANOUT = 8;
+
+  // Same glyphs as models/enums.py EVENT_LABELS, so Slack, the CLI and this page
+  // all speak the same visual vocabulary.
+  var EVENT_GLYPH = {
+    UPDATE: "🔄", QUESTION: "❓", ANSWER: "💬", CLAIM: "🔒",
+    HANDOFF: "🤝", BLOCKED: "🚧", DECISION: "📌", RELEASE: "🔓"
+  };
+
+  var state = { project: "", intervalSeconds: 15, paused: false, inFlight: false, timer: null };
+
+  var $ = function (id) { return document.getElementById(id); };
+
+  // ------------------------------------------------------------------- escaping
+  // Everything from the API is hostile text: agents (and GitHub, and Slack) put
+  // arbitrary strings in summaries. The rule in this file is textContent only.
+  function escapeHtml(value) {
+    return String(value === null || value === undefined ? "" : value)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+
+  // The single place in this page that builds markup from API data, and the reason
+  // escapeHtml exists: escape first, then re-introduce only the <br> we chose.
+  function setSummary(node, value) {
+    node.innerHTML = escapeHtml(value).replace(/\r?\n/g, "<br>");
+  }
+
+  function el(tag, className, text) {
+    var node = document.createElement(tag);
+    if (className) { node.className = className; }
+    if (text !== undefined && text !== null) { node.textContent = String(text); }
+    return node;
+  }
+
+  // ------------------------------------------------------------------- time
+  function parseTime(iso) {
+    if (!iso) { return NaN; }
+    // Defensive: a naive timestamp would otherwise be read as browser-local time.
+    var value = /(?:Z|[+-]\d{2}:?\d{2})$/.test(iso) ? iso : iso + "Z";
+    return Date.parse(value);
+  }
+
+  function relative(iso) {
+    var then = parseTime(iso);
+    if (isNaN(then)) { return "unknown"; }
+    var seconds = Math.round((Date.now() - then) / 1000);
+    var ahead = seconds < 0;
+    seconds = Math.abs(seconds);
+    var out;
+    if (seconds < 45) { out = "just now"; }
+    else if (seconds < 3600) { out = Math.round(seconds / 60) + "m"; }
+    else if (seconds < 86400) { out = Math.round(seconds / 3600) + "h"; }
+    else { out = Math.round(seconds / 86400) + "d"; }
+    if (out === "just now") { return ahead ? "in a moment" : out; }
+    return ahead ? "in " + out : out + " ago";
+  }
+
+  function timeNode(iso) {
+    var node = el("time", "meta", relative(iso));
+    if (iso) {
+      node.setAttribute("datetime", iso);
+      node.dataset.iso = iso;
+      var parsed = parseTime(iso);
+      node.title = isNaN(parsed) ? iso : new Date(parsed).toLocaleString();
+    }
+    return node;
+  }
+
+  // Cheap ticker so "4m ago" stays honest between (or during) network refreshes.
+  function retickTimes() {
+    var nodes = document.querySelectorAll("time[data-iso]");
+    for (var i = 0; i < nodes.length; i++) {
+      nodes[i].textContent = relative(nodes[i].dataset.iso);
+    }
+  }
+
+  // ------------------------------------------------------------------ token
+  // The page itself is unauthenticated; its fetches are not. We deliberately do NOT
+  // ship the server token in the HTML (see api/routes_dashboard.py) — the viewer
+  // supplies it once and the browser keeps it.
+  function readToken() {
+    try { return window.localStorage.getItem(TOKEN_KEY) || ""; } catch (err) { return ""; }
+  }
+  function writeToken(value) {
+    try {
+      if (value) { window.localStorage.setItem(TOKEN_KEY, value); }
+      else { window.localStorage.removeItem(TOKEN_KEY); }
+    } catch (err) { /* private mode: the token just lives for this page load */ }
+  }
+
+  // ------------------------------------------------------------------- fetch
+  function api(path) {
+    var headers = { "Accept": "application/json" };
+    var token = readToken();
+    if (token) { headers["Authorization"] = "Bearer " + token; }
+    // Root-absolute paths: the app is mounted at "/", so this works behind any
+    // host/port without the page knowing its own origin.
+    return fetch(path, { headers: headers, cache: "no-store" }).then(function (response) {
+      if (response.status === 401) {
+        var authError = new Error("unauthorized");
+        authError.unauthorized = true;
+        throw authError;
+      }
+      if (!response.ok) { throw new Error(path + " → HTTP " + response.status); }
+      return response.json();
+    });
+  }
+
+  function query(project, extra) {
+    var parts = [];
+    if (project) { parts.push("project=" + encodeURIComponent(project)); }
+    if (extra) { parts.push(extra); }
+    return parts.length ? "?" + parts.join("&") : "";
+  }
+
+  function loadAll() {
+    var project = state.project;
+    return Promise.all([
+      api("/dashboard/projects"),
+      api("/tasks" + query(project)),
+      api("/claims" + query(project)),
+      api("/events" + query(project, "limit=" + EVENT_LIMIT))
+    ]).then(function (base) {
+      var projects = base[0];
+      var targets = project ? [project] : projects.slice(0, MAX_FANOUT);
+      return Promise.all(targets.map(function (name) {
+        var scope = query(name);
+        return Promise.all([
+          api("/context" + scope),
+          api("/coordination/summary" + scope)
+        ]).then(function (pair) {
+          return { project: name, context: pair[0], summary: pair[1] };
+        });
+      })).then(function (perProject) {
+        return {
+          projects: projects,
+          tasks: base[1],
+          claims: base[2],
+          events: base[3],
+          perProject: perProject
+        };
+      });
+    });
+  }
+
+  // ----------------------------------------------------------------- pieces
+  function taskNode(task, url) {
+    if (!task) { return el("span", "meta", "no task"); }
+    if (url) {
+      var link = el("a", "task", task);
+      link.href = url;                       // server-supplied GitHub issue URL
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.title = "Open " + task + " on GitHub";
+      return link;
+    }
+    return el("span", "task", task);
+  }
+
+  function projectPill(name) {
+    var pill = el("span", "pill", name);
+    pill.title = "Project: " + name;
+    return pill;
+  }
+
+  // Only label the project when the view spans more than one — otherwise it is noise.
+  function maybeProject(line, name) {
+    if (!state.project && name) { line.appendChild(projectPill(name)); }
+  }
+
+  function render(target, items, emptyText, build) {
+    var host = $(target);
+    host.textContent = "";
+    var counter = $("count-" + target);
+    if (counter) { counter.textContent = items.length ? "(" + items.length + ")" : ""; }
+    if (!items.length) {
+      host.appendChild(el("p", "empty", emptyText));
+      return;
+    }
+    var list = el("ul", "rows");
+    items.forEach(function (item) { list.appendChild(build(item)); });
+    host.appendChild(list);
+  }
+
+  // ---------------------------------------------------------------- panels
+  function renderBlocked(tasks) {
+    var blocked = tasks.filter(function (t) { return t.blocked; });
+    render("blocked", blocked, "No blocked tasks — nothing needs attention.", function (task) {
+      var item = el("li");
+      var line = el("div", "line");
+      line.appendChild(el("span", "glyph", "🚧"));
+      line.appendChild(taskNode(task.task, task.github_url));
+      line.appendChild(el("span", "pill blocked", "🚧 blocked"));
+      if (task.blocked_by) { line.appendChild(el("span", "meta", "reported by " + task.blocked_by)); }
+      if (task.owner) { line.appendChild(el("span", "meta", "owner " + task.owner)); }
+      maybeProject(line, task.project);
+      line.appendChild(timeNode(task.last_activity_at));
+      item.appendChild(line);
+      if (task.blocked_reason) {
+        var reason = el("div", "summary reason");
+        setSummary(reason, task.blocked_reason);
+        item.appendChild(reason);
+      }
+      return item;
+    });
+    return blocked.length;
+  }
+
+  function renderQuestions(questions) {
+    render("questions", questions, "No open questions — nobody is waiting on an answer.",
+      function (question) {
+        var item = el("li");
+        var line = el("div", "line");
+        line.appendChild(el("span", "glyph", "❓"));
+        line.appendChild(el("span", "task", question.ref));
+        line.appendChild(el("span", "who", question.from_agent));
+        line.appendChild(el("span", "meta", question.to_agent ? "→ " + question.to_agent : "→ anyone"));
+        if (question.task) { line.appendChild(taskNode(question.task, null)); }
+        maybeProject(line, question.project);
+        line.appendChild(el("span", "pill question", "❓ waiting"));
+        line.appendChild(timeNode(question.asked_at));
+        item.appendChild(line);
+        var body = el("div", "summary");
+        setSummary(body, question.question);
+        item.appendChild(body);
+        return item;
+      });
+    return questions.length;
+  }
+
+  function renderClaims(claims, taskUrls) {
+    render("claims", claims, "Nobody is holding a task right now.", function (claim) {
+      var item = el("li");
+      var line = el("div", "line");
+      line.appendChild(el("span", "glyph", "🔒"));
+      line.appendChild(el("span", "who", claim.agent));
+      line.appendChild(el("span", "meta", "is working on"));
+      line.appendChild(taskNode(claim.task, taskUrls[claim.project + " " + claim.task]));
+      if (claim.human_owner) { line.appendChild(el("span", "pill", "👤 " + claim.human_owner)); }
+      if (claim.branch) { line.appendChild(el("code", null, claim.branch)); }
+      maybeProject(line, claim.project);
+      line.appendChild(el("span", "pill claimed", "🔒 claimed"));
+      line.appendChild(timeNode(claim.last_activity_at));
+      item.appendChild(line);
+      if (claim.note) {
+        var note = el("div", "summary");
+        setSummary(note, claim.note);
+        item.appendChild(note);
+      }
+      return item;
+    });
+  }
+
+  function renderActivity(events) {
+    render("activity", events, "No events yet — the relay is quiet.", function (event) {
+      var item = el("li");
+      var line = el("div", "line");
+      var glyph = el("span", "glyph", EVENT_GLYPH[event.event_type] || "•");
+      glyph.title = event.event_type;
+      line.appendChild(glyph);
+      // The type is spelled out as well as coloured/emojied: colour alone carries nothing.
+      line.appendChild(el("span", "pill", event.event_type));
+      line.appendChild(el("span", "who", event.agent));
+      if (event.target_agent) { line.appendChild(el("span", "meta", "→ " + event.target_agent)); }
+      if (event.task) { line.appendChild(taskNode(event.task, event.github_url)); }
+      maybeProject(line, event.project);
+      line.appendChild(timeNode(event.created_at));
+      item.appendChild(line);
+      var summary = el("div", "summary");
+      setSummary(summary, event.summary);
+      item.appendChild(summary);
+      return item;
+    });
+  }
+
+  function renderActions(actions) {
+    render("actions", actions, "No suggestions — the relay sees nothing that needs a nudge.",
+      function (action) {
+        var item = el("li");
+        var line = el("div", "line");
+        line.appendChild(el("span", "glyph", "📌"));
+        maybeProject(line, action.project);
+        item.appendChild(line);
+        var body = el("div", "summary");
+        setSummary(body, action.text);
+        item.appendChild(body);
+        return item;
+      });
+  }
+
+  function renderTiles(claimCount, blockedCount, questionCount, agentCount) {
+    $("tile-claims").textContent = claimCount;
+    $("tile-blocked").textContent = blockedCount;
+    $("tile-questions").textContent = questionCount;
+    $("tile-agents").textContent = agentCount;
+    $("tile-blocked-box").classList.toggle("alert", blockedCount > 0);
+    $("tile-questions-box").classList.toggle("alert", questionCount > 0);
+  }
+
+  function syncProjects(projects) {
+    var select = $("project-select");
+    var wanted = [""].concat(projects);
+    var current = Array.prototype.map.call(select.options, function (o) { return o.value; });
+    if (wanted.length === current.length && wanted.every(function (v, i) { return v === current[i]; })) {
+      return;  // rebuilding the <select> every 15s would fight the user's focus
+    }
+    select.textContent = "";
+    select.appendChild(el("option", null, "All projects"));
+    select.options[0].value = "";
+    projects.forEach(function (name) {
+      var option = el("option", null, name);
+      option.value = name;
+      select.appendChild(option);
+    });
+    select.value = projects.indexOf(state.project) >= 0 ? state.project : "";
+    state.project = select.value;
+  }
+
+  function paint(data) {
+    syncProjects(data.projects);
+
+    // (project, task) -> GitHub URL, harvested from /tasks so claims can link too.
+    var taskUrls = {};
+    data.tasks.forEach(function (task) {
+      if (task.github_url) { taskUrls[task.project + " " + task.task] = task.github_url; }
+    });
+
+    var questions = [];
+    var actions = [];
+    var agents = {};
+    data.perProject.forEach(function (entry) {
+      entry.context.unresolved_questions.forEach(function (q) { questions.push(q); });
+      entry.summary.suggested_actions.forEach(function (text) {
+        actions.push({ project: entry.project, text: text });
+      });
+      entry.context.active_agents.forEach(function (a) { agents[a.agent] = true; });
+    });
+    questions.sort(function (a, b) { return parseTime(b.asked_at) - parseTime(a.asked_at); });
+    data.claims.forEach(function (c) { agents[c.agent] = true; });
+    data.events.forEach(function (e) { agents[e.agent] = true; });
+
+    var blockedCount = renderBlocked(data.tasks);
+    renderQuestions(questions);
+    renderClaims(data.claims, taskUrls);
+    renderActivity(data.events);
+    renderActions(actions);
+    renderTiles(data.claims.length, blockedCount, questions.length, Object.keys(agents).length);
+
+    $("stamp").textContent = "updated " + new Date().toLocaleTimeString();
+  }
+
+  // ------------------------------------------------------------- banners
+  function showError(message) {
+    var banner = $("error-banner");
+    banner.textContent = "⚠️ Cannot reach the relay: " + message + " — retrying.";
+    banner.hidden = false;
+  }
+  function clearError() { $("error-banner").hidden = true; }
+
+  function showAuth() {
+    $("auth-banner").hidden = false;
+    $("stamp").textContent = "token required";
+  }
+  function clearAuth() { $("auth-banner").hidden = true; }
+
+  // -------------------------------------------------------------- refresh
+  function refresh() {
+    // One request cycle at a time. A slow relay must not accumulate a queue of polls
+    // that all land at once and render out of order.
+    if (state.inFlight) { return Promise.resolve(); }
+    state.inFlight = true;
+    return loadAll().then(function (data) {
+      clearError();
+      clearAuth();
+      paint(data);
+    }).catch(function (err) {
+      if (err && err.unauthorized) {
+        clearError();
+        showAuth();
+      } else {
+        // Keep the last good render on screen; the banner says it is stale.
+        showError(err && err.message ? err.message : "unknown error");
+      }
+    }).then(function () {
+      state.inFlight = false;
+    });
+  }
+
+  function reschedule() {
+    if (state.timer) { window.clearInterval(state.timer); state.timer = null; }
+    if (!state.paused) {
+      state.timer = window.setInterval(refresh, state.intervalSeconds * 1000);
+    }
+  }
+
+  // ---------------------------------------------------------------- wiring
+  $("project-select").addEventListener("change", function (event) {
+    state.project = event.target.value;
+    refresh();
+  });
+
+  $("interval-select").addEventListener("change", function (event) {
+    state.intervalSeconds = parseInt(event.target.value, 10) || 15;
+    reschedule();
+  });
+
+  $("pause-button").addEventListener("click", function () {
+    state.paused = !state.paused;
+    var button = $("pause-button");
+    button.textContent = state.paused ? "▶ Resume" : "⏸ Pause";
+    button.setAttribute("aria-pressed", state.paused ? "true" : "false");
+    reschedule();
+    if (!state.paused) { refresh(); }
+  });
+
+  $("refresh-button").addEventListener("click", function () { refresh(); });
+
+  $("auth-form").addEventListener("submit", function (event) {
+    event.preventDefault();   // read-only page: nothing here is ever POSTed
+    writeToken($("token-input").value.trim());
+    $("token-input").value = "";
+    refresh();
+  });
+
+  $("token-clear").addEventListener("click", function () {
+    writeToken("");
+    $("token-input").value = "";
+    showAuth();
+  });
+
+  // Pausing while the tab is hidden keeps a forgotten dashboard from polling forever.
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden) {
+      if (state.timer) { window.clearInterval(state.timer); state.timer = null; }
+    } else {
+      reschedule();
+      refresh();
+    }
+  });
+
+  window.setInterval(retickTimes, 20000);
+  reschedule();
+  refresh();
+})();
+</script>
+</body>
+</html>

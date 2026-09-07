@@ -50,6 +50,12 @@ class Event(Base):
     artifacts_json: Mapped[list[str] | None] = mapped_column(JSONText, default=None)
     metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSONText, default=None)
     created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, index=True, default=utcnow)
+    #: Where this event came from: "agent" (default), "github", "slack", "coordinator".
+    source: Mapped[str] = mapped_column(String(16), index=True, default="agent")
+    #: Slack message ts of the posted copy. This is the anchor that lets a human's
+    #: threaded reply in Slack become an ANSWER event on the right question.
+    slack_ts: Mapped[str | None] = mapped_column(String(32), index=True, default=None)
+    slack_channel: Mapped[str | None] = mapped_column(String(32), default=None)
 
     __table_args__ = (
         Index("ix_events_project_created", "project", "created_at"),
@@ -111,5 +117,35 @@ class Agent(Base):
     )
     first_seen_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=utcnow)
     last_seen_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, index=True, default=utcnow)
+    #: Explicit liveness signal, distinct from last_seen_at (which any event updates).
+    #: An agent can be posting nothing and still be alive, or dead mid-task.
+    last_heartbeat_at: Mapped[dt.datetime | None] = mapped_column(
+        UTCDateTime, index=True, default=None
+    )
+    host: Mapped[str | None] = mapped_column(String(255), default=None)
+    pid: Mapped[int | None] = mapped_column(default=None)
+    version: Mapped[str | None] = mapped_column(String(64), default=None)
+    #: Free-text "what I am doing", set on the heartbeat.
+    status_note: Mapped[str | None] = mapped_column(String(500), default=None)
+    current_task: Mapped[str | None] = mapped_column(String(128), default=None)
 
     __table_args__ = (UniqueConstraint("name", name="uq_agent_name"),)
+
+
+class IngestRecord(Base):
+    """Idempotency ledger for inbound webhooks and pollers.
+
+    GitHub retries deliveries and Slack retries events; without this, one push
+    would become three identical UPDATE events.
+    """
+
+    __tablename__ = "ingest_records"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source: Mapped[str] = mapped_column(String(16), index=True)
+    #: Delivery id, Slack event id, or a synthesised natural key for pollers.
+    external_id: Mapped[str] = mapped_column(String(255))
+    event_id: Mapped[int | None] = mapped_column(default=None)
+    received_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+    __table_args__ = (UniqueConstraint("source", "external_id", name="uq_ingest_source_external"),)

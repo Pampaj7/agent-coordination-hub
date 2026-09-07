@@ -16,8 +16,20 @@ from fastapi import FastAPI
 
 from agent_relay import __version__
 from agent_relay.api.routes import public_router, router
+from agent_relay.api.routes_coordinator import router as coordinator_router
+from agent_relay.api.routes_dashboard import router as dashboard_router
+from agent_relay.api.routes_github_hooks import router as github_hooks_router
+from agent_relay.api.routes_presence import router as presence_router
+from agent_relay.api.routes_slack_hooks import router as slack_hooks_router
+from agent_relay.api.routes_v2 import (
+    a2a_router,
+    a2a_rpc_router,
+    experiments_router,
+    overview_router,
+)
 from agent_relay.config import get_settings
 from agent_relay.db.session import init_db
+from agent_relay.services.scheduler import Scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +58,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging(settings.log_level)
     init_db(settings)
     logger.info("agent-relay %s ready | %s", __version__, settings.public_summary())
-    yield
+
+    # Background jobs (sweeper / GitHub polling / status posts). Each is opt-in and
+    # isolated; see services/scheduler.py.
+    scheduler = Scheduler(settings)
+    app.state.scheduler = scheduler
+    scheduler.start()
+    try:
+        yield
+    finally:
+        await scheduler.stop()
 
 
 def create_app() -> FastAPI:
@@ -58,6 +79,16 @@ def create_app() -> FastAPI:
     )
     app.include_router(public_router)
     app.include_router(router)
+    # --- V2 ---
+    app.include_router(presence_router)
+    app.include_router(coordinator_router)
+    app.include_router(github_hooks_router)
+    app.include_router(slack_hooks_router)
+    app.include_router(dashboard_router)
+    app.include_router(experiments_router)
+    app.include_router(overview_router)
+    app.include_router(a2a_router)
+    app.include_router(a2a_rpc_router)
     return app
 
 

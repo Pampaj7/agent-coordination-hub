@@ -7,7 +7,17 @@ from functools import lru_cache
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-SECRET_FIELDS = frozenset({"api_token", "slack_webhook_url", "github_token"})
+SECRET_FIELDS = frozenset(
+    {
+        "api_token",
+        "slack_webhook_url",
+        "slack_bot_token",
+        "slack_signing_secret",
+        "github_token",
+        "github_webhook_secret",
+        "anthropic_api_key",
+    }
+)
 
 
 class Settings(BaseSettings):
@@ -34,16 +44,60 @@ class Settings(BaseSettings):
     # --- optional shared auth ---
     api_token: str | None = Field(default=None, alias="AGENT_RELAY_API_TOKEN")
 
-    # --- slack ---
+    # --- slack (outbound) ---
     slack_webhook_url: str | None = Field(default=None, alias="SLACK_WEBHOOK_URL")
     slack_event_types: str | None = Field(default=None, alias="SLACK_EVENT_TYPES")
     slack_timeout_seconds: float = Field(default=5.0, alias="SLACK_TIMEOUT_SECONDS")
+
+    # --- slack (bidirectional bot; V2) ---
+    #: A bot token is what makes Slack two-way: chat.postMessage returns the message
+    #: ts, which is how a human's threaded reply finds its way back to an event.
+    slack_bot_token: str | None = Field(default=None, alias="SLACK_BOT_TOKEN")
+    slack_signing_secret: str | None = Field(default=None, alias="SLACK_SIGNING_SECRET")
+    slack_default_channel: str | None = Field(default=None, alias="SLACK_DEFAULT_CHANNEL")
+    #: "tether=C012AB,drends=C034CD" — per-project channel routing.
+    slack_channel_map: str | None = Field(default=None, alias="SLACK_CHANNEL_MAP")
+
+    # --- presence and claim hygiene (V2) ---
+    heartbeat_online_seconds: int = Field(default=300, alias="AGENT_RELAY_HEARTBEAT_ONLINE_SECONDS")
+    heartbeat_idle_seconds: int = Field(default=1800, alias="AGENT_RELAY_HEARTBEAT_IDLE_SECONDS")
+    claim_stale_hours: float = Field(default=24.0, alias="AGENT_RELAY_CLAIM_STALE_HOURS")
+    #: 0 disables auto-release entirely; a stale claim is then only ever reported.
+    claim_expiry_hours: float = Field(default=0.0, alias="AGENT_RELAY_CLAIM_EXPIRY_HOURS")
+    sweeper_interval_seconds: int = Field(default=300, alias="AGENT_RELAY_SWEEPER_INTERVAL_SECONDS")
 
     # --- github ---
     github_token: str | None = Field(default=None, alias="GITHUB_TOKEN")
     github_owner: str | None = Field(default=None, alias="GITHUB_OWNER")
     github_repo: str | None = Field(default=None, alias="GITHUB_REPO")
     github_task_prefix: str = Field(default="GH-", alias="GITHUB_TASK_PREFIX")
+
+    # --- github ingestion (V2) ---
+    github_webhook_secret: str | None = Field(default=None, alias="GITHUB_WEBHOOK_SECRET")
+    #: Project name that ingested GitHub activity is filed under.
+    github_ingest_project: str | None = Field(default=None, alias="GITHUB_INGEST_PROJECT")
+    #: 0 disables polling. Use it when the relay has no publicly reachable URL.
+    github_poll_interval_seconds: int = Field(default=0, alias="GITHUB_POLL_INTERVAL_SECONDS")
+
+    # --- coordinator LLM (V2) ---
+    anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
+    coordinator_model: str = Field(default="claude-opus-5", alias="COORDINATOR_MODEL")
+    coordinator_max_tokens: int = Field(default=16000, alias="COORDINATOR_MAX_TOKENS")
+    #: low | medium | high | xhigh | max. A status brief is a small job; "low" keeps
+    #: the hourly cost negligible without hurting the output.
+    coordinator_effort: str = Field(default="low", alias="COORDINATOR_EFFORT")
+    #: 0 disables the scheduled team status post.
+    status_interval_minutes: int = Field(default=0, alias="AGENT_RELAY_STATUS_INTERVAL_MINUTES")
+    status_projects: str | None = Field(default=None, alias="AGENT_RELAY_STATUS_PROJECTS")
+
+    # --- experiment trackers (V2, link-only) ---
+    wandb_entity: str | None = Field(default=None, alias="WANDB_ENTITY")
+    wandb_project: str | None = Field(default=None, alias="WANDB_PROJECT")
+    mlflow_tracking_uri: str | None = Field(default=None, alias="MLFLOW_TRACKING_URI")
+
+    # --- dashboard (V2) ---
+    dashboard_enabled: bool = Field(default=True, alias="AGENT_RELAY_DASHBOARD")
+    public_base_url: str | None = Field(default=None, alias="AGENT_RELAY_PUBLIC_URL")
 
     # --- context/coordination tuning ---
     context_recent_limit: int = Field(default=10, alias="AGENT_RELAY_CONTEXT_LIMIT")
@@ -56,6 +110,18 @@ class Settings(BaseSettings):
         "github_owner",
         "github_repo",
         "slack_event_types",
+        "slack_bot_token",
+        "slack_signing_secret",
+        "slack_default_channel",
+        "slack_channel_map",
+        "github_webhook_secret",
+        "github_ingest_project",
+        "anthropic_api_key",
+        "status_projects",
+        "wandb_entity",
+        "wandb_project",
+        "mlflow_tracking_uri",
+        "public_base_url",
         mode="before",
     )
     @classmethod
@@ -74,6 +140,52 @@ class Settings(BaseSettings):
         return bool(self.github_owner and self.github_repo)
 
     @property
+    def slack_bot_enabled(self) -> bool:
+        """Two-way Slack needs a bot token; a webhook alone can only post."""
+        return bool(self.slack_bot_token)
+
+    @property
+    def slack_events_enabled(self) -> bool:
+        """Inbound Slack events additionally need the signing secret to be verifiable."""
+        return bool(self.slack_bot_token and self.slack_signing_secret)
+
+    @property
+    def slack_channels(self) -> dict[str, str]:
+        """Parse SLACK_CHANNEL_MAP ("tether=C012AB,drends=C034CD")."""
+        mapping: dict[str, str] = {}
+        for pair in (self.slack_channel_map or "").split(","):
+            project, sep, channel = pair.partition("=")
+            if sep and project.strip() and channel.strip():
+                mapping[project.strip()] = channel.strip()
+        return mapping
+
+    def channel_for(self, project: str | None) -> str | None:
+        """Per-project channel, falling back to the default channel."""
+        if project and (channel := self.slack_channels.get(project)):
+            return channel
+        return self.slack_default_channel
+
+    @property
+    def github_webhooks_enabled(self) -> bool:
+        return bool(self.github_webhook_secret)
+
+    @property
+    def github_polling_enabled(self) -> bool:
+        return self.github_enabled and self.github_poll_interval_seconds > 0
+
+    @property
+    def coordinator_enabled(self) -> bool:
+        return bool(self.anthropic_api_key)
+
+    @property
+    def status_project_list(self) -> list[str]:
+        return [p.strip() for p in (self.status_projects or "").split(",") if p.strip()]
+
+    @property
+    def auto_release_enabled(self) -> bool:
+        return self.claim_expiry_hours > 0
+
+    @property
     def slack_event_type_filter(self) -> frozenset[str] | None:
         """Event types to forward to Slack, or None meaning "all"."""
         if not self.slack_event_types:
@@ -90,6 +202,13 @@ class Settings(BaseSettings):
             "github_repo": (
                 f"{self.github_owner}/{self.github_repo}" if self.github_enabled else None
             ),
+            "slack_bot": self.slack_bot_enabled,
+            "slack_events": self.slack_events_enabled,
+            "github_webhooks": self.github_webhooks_enabled,
+            "github_polling": self.github_polling_enabled,
+            "coordinator_llm": self.coordinator_enabled,
+            "auto_release": self.auto_release_enabled,
+            "dashboard": self.dashboard_enabled,
         }
 
 

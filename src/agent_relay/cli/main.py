@@ -10,6 +10,8 @@ Identity comes from the environment so an agent never has to repeat itself::
 from __future__ import annotations
 
 import json
+import os
+import socket
 import sys
 from typing import Annotated, Any
 
@@ -276,7 +278,7 @@ def release(
     except RelayError as exc:
         _fail(exc)
         return
-    _emit(payload, render.render_claim(payload, verb="released by"), as_json)
+    _emit(payload, render.render_claim(payload, verb="released"), as_json)
 
 
 @app.command()
@@ -522,6 +524,98 @@ def post_decision(
         ),
         as_json,
     )
+
+
+# --- V2: presence, hygiene, coordination -------------------------------------
+
+
+@app.command()
+def heartbeat(
+    agent: AgentOpt = None,
+    owner: OwnerOpt = None,
+    project: Annotated[str | None, typer.Option("--project", "-p")] = None,
+    task: Annotated[str | None, typer.Option("--task", "-t")] = None,
+    note: Annotated[str | None, typer.Option("--note", help="What you are doing.")] = None,
+    as_json: JsonOpt = False,
+) -> None:
+    """Report that you are alive.
+
+    Distinct from posting an event: an agent can be working quietly for an hour and
+    still needs to say so, otherwise its claim looks abandoned.
+    """
+    agent_name, human_owner = _identity(agent, owner)
+    try:
+        payload = _client().post(
+            "/heartbeat",
+            {
+                "agent": agent_name,
+                "human_owner": human_owner,
+                "project": project,
+                "task": task,
+                "status_note": note,
+                "host": socket.gethostname(),
+                "pid": os.getpid(),
+            },
+        )
+    except RelayError as exc:
+        _fail(exc)
+        return
+    _emit(payload, render.render_agents([payload]), as_json)
+
+
+@app.command()
+def agents(
+    project: Annotated[str | None, typer.Option("--project", "-p")] = None,
+    status: Annotated[str | None, typer.Option(help="online | idle | offline | unknown")] = None,
+    as_json: JsonOpt = False,
+) -> None:
+    """Who is alive right now, and what are they holding."""
+    try:
+        payload = _client().get("/agents", project=project, status=status)
+    except RelayError as exc:
+        _fail(exc)
+        return
+    _emit(payload, render.render_agents(payload), as_json)
+
+
+@app.command()
+def stale(
+    project: Annotated[str | None, typer.Option("--project", "-p")] = None,
+    as_json: JsonOpt = False,
+) -> None:
+    """Claims whose owner has gone quiet — the usual cause of a blocked teammate."""
+    try:
+        payload = _client().get("/claims/stale", project=project)
+    except RelayError as exc:
+        _fail(exc)
+        return
+    _emit(payload, render.render_stale(payload), as_json)
+
+
+@app.command()
+def sweep(as_json: JsonOpt = False) -> None:
+    """Run the stale-claim sweep now (auto-releases only if that is switched on)."""
+    try:
+        payload = _client().post("/claims/sweep", {})
+    except RelayError as exc:
+        _fail(exc)
+        return
+    _emit(payload, render.render_sweep(payload), as_json)
+
+
+@app.command()
+def brief(
+    project: ProjectOpt,
+    window_hours: Annotated[int | None, typer.Option(help="Lookback window.")] = None,
+    as_json: JsonOpt = False,
+) -> None:
+    """A short readable briefing. Uses the LLM coordinator when configured."""
+    try:
+        payload = _client().get("/coordination/brief", project=project, window_hours=window_hours)
+    except RelayError as exc:
+        _fail(exc)
+        return
+    _emit(payload, render.render_brief(payload), as_json)
 
 
 def main() -> None:

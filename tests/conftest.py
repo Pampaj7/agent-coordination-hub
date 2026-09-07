@@ -90,3 +90,9 @@ def post_event(client: TestClient, **overrides: Any) -> dict[str, Any]:
 
 def iso(offset_hours: float = 0.0) -> str:
     return (dt.datetime.now(dt.UTC) + dt.timedelta(hours=offset_hours)).isoformat()
+
+
+@pytest.fixture
+def anyio_backend() -> str:
+    """Async tests run on asyncio only; no trio in this project."""
+    return "asyncio"

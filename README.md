@@ -39,15 +39,17 @@ flowchart TB
 
     RELAY["<b>Agent Relay API</b><br/>events · claims · context · coordination"]
 
-    RELAY -->|"rendered messages<br/>(best effort)"| SLACK["<b>Slack</b><br/>humans watch here"]
-    RELAY -->|"links · read-only metadata"| GH["<b>GitHub</b><br/>code · issues · PRs · artifacts"]
+    RELAY <-->|"posts events · threaded replies<br/>become ANSWERs"| SLACK["<b>Slack</b><br/>humans watch and reply here"]
+    RELAY <-->|"links · read-only metadata<br/>webhooks in"| GH["<b>GitHub</b><br/>code · issues · PRs · artifacts"]
     RELAY --- DB[("<b>SQLite</b><br/>coordination state")]
+    RELAY --- DASH["<b>Dashboard</b><br/>read-only web view"]
 
-    SLACK -.->|"read"| humans
-    COORD["Coordinator Agent<br/><i>(future, not in MVP)</i>"] -.->|"GET /coordination/summary"| RELAY
+    SLACK -.->|"read and reply"| humans
+    DASH -.->|"watch"| humans
+    COORD["<b>Coordinator</b><br/>rule-based, LLM optional"] -->|"summary · brief · overview"| RELAY
 
-    classDef future stroke-dasharray: 5 5;
-    class COORD future;
+    classDef optional stroke-dasharray: 5 5;
+    class COORD,DASH optional;
 ```
 
 Read it as one sentence: **agents** talk to the **relay**; the relay makes their work
@@ -89,6 +91,22 @@ GitHub link.
 | `GET /coordination/summary?project=` | Deterministic team situational awareness |
 | `GET /github/issues/{number}`, `GET /github/pulls` | Read-only GitHub passthrough |
 | `GET /health` | Liveness + which integrations are on |
+
+Added in V2:
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /heartbeat` | An agent reports it is alive, and what it is doing |
+| `GET /agents` | Presence: who is online, idle, offline, and what they hold |
+| `GET /claims/stale` | Claims whose owner has gone quiet |
+| `POST /claims/sweep` | Run the hygiene pass now (auto-release is opt-in) |
+| `GET /coordination/brief` | A readable briefing — LLM-written when configured, rule-based otherwise |
+| `GET /coordination/overview` | Every project at once, including agents split across projects |
+| `GET /experiments` | W&B / MLflow run links harvested from event artifacts |
+| `POST /webhooks/github` | GitHub activity becomes relay events (HMAC-authenticated) |
+| `POST /webhooks/slack/events` | A human's threaded Slack reply becomes an ANSWER |
+| `GET /dashboard` | Read-only web view of everything above |
+| `GET /.well-known/agent.json`, `POST /a2a` | A2A discovery and `message/send` |
 
 Eight event types, and no more:
 
@@ -298,6 +316,177 @@ The three rules, in full:
 An LLM coordinator can be layered on top later. It would consume this endpoint, not
 replace it.
 
+## Keeping the team honest (V2)
+
+The MVP assumed agents behave: they claim, they post, they release. In practice an
+agent crashes at 2am holding a claim, a human answers a question in Slack where the
+relay cannot see it, and a PR gets merged without anyone telling the relay. V2 closes
+those gaps.
+
+### Presence, and claims that clean up after themselves
+
+A heartbeat is a liveness signal separate from posting events — an agent can be
+working quietly for an hour and still needs to say so.
+
+```bash
+agent-relay heartbeat --project tether --task GH-142 --note "running the H=6 sweep"
+agent-relay agents
+```
+
+```console
+AGENT                STATUS     OWNER          SEEN  TASKS
+----------------------------------------------------------
+leo-codex            🟢 online   leonardo         0s  GH-142
+                     running the H=6 sweep
+niccolo-claude       🟡 idle     niccolo        22m  GH-138
+andrea-agent         🔴 offline  andrea          3h  GH-151
+```
+
+An agent that dies mid-task leaves a claim nobody can take. The relay notices:
+
+```bash
+agent-relay stale     # claims with no activity for AGENT_RELAY_CLAIM_STALE_HOURS
+agent-relay sweep     # release the expired ones
+```
+
+**Auto-release is off by default** (`AGENT_RELAY_CLAIM_EXPIRY_HOURS=0`) — the relay
+reports stale claims and lets a human decide. Set it to a number of hours and the
+background sweeper reclaims them, writing a `RELEASE` event with
+`metadata.auto_released: true` so the reclaim is never silent.
+
+Three background jobs exist, each opt-in and each isolated so one failing never stops
+the others: the stale sweeper, GitHub polling, and a scheduled Slack status post.
+
+### Slack that talks back
+
+With a bot token instead of just a webhook, Slack becomes bidirectional. Posting an
+event returns a message `ts`, which the relay stores; when a human replies in that
+thread, the reply comes back as a real `ANSWER` event and the question closes.
+
+```text
+❓ QUESTION · TETHER · GH-142                    ← posted by leo-codex
+leo-codex → niccolo-claude
+Q-3 Did DRENDS preprocessing mask invalid depth before or after resize?
+  └─ niccolo (in thread): "before resize, in the loader"
+                                                  ↓
+     ANSWER E-9 · in_reply_to Q-3 · source slack · agent slack:U04NIC
+     Q-3 disappears from GET /context's unresolved_questions
+```
+
+Set `SLACK_CHANNEL_MAP="tether=C012AB,drends=C034CD"` to route each project to its own
+channel. Inbound events are authenticated by Slack's v0 signature with a five-minute
+replay window, and deduplicated on Slack's event id because Slack retries.
+
+### GitHub that reports itself
+
+Point a GitHub webhook at `POST /webhooks/github` with a shared secret and repo
+activity becomes relay events, so `/context` reflects what actually happened:
+
+| GitHub event | Becomes |
+|---|---|
+| Issue opened / closed / reopened | `UPDATE` on `GH-<number>` |
+| PR opened / closed unmerged | `UPDATE`, with the head branch |
+| **PR merged** | **`DECISION`** — merging is the durable decision |
+| Push | `UPDATE` with commit count and links |
+| Issue comment | `UPDATE`, truncated |
+
+Authenticated by HMAC (`X-Hub-Signature-256`), not by the relay's bearer token —
+GitHub cannot send one. Deliveries are idempotent on `X-GitHub-Delivery`, because
+GitHub retries and one push must not become three events. Ingested events carry
+`source: "github"` and an agent name like `github:leonardo` that cannot be mistaken
+for one of your agents. If the relay has no public URL, set
+`GITHUB_POLL_INTERVAL_SECONDS` and it pulls instead.
+
+### A briefing you will actually read
+
+```bash
+agent-relay brief --project tether
+```
+
+`GET /coordination/brief` puts prose on top of the deterministic summary — **never in
+place of it**. The response always carries `source` (`llm` or `deterministic`), the
+model used, and the full audited `summary` the prose was derived from. With no API
+key, no SDK, or any API failure, it degrades to a rule-based briefing rather than
+returning nothing. The model is given only the computed snapshot and told to invent
+nothing; it has no database access to hallucinate from.
+
+```bash
+uv sync --extra coordinator      # installs the Anthropic SDK
+ANTHROPIC_API_KEY=sk-ant-...     # without this, the endpoint still works
+```
+
+Set `AGENT_RELAY_STATUS_INTERVAL_MINUTES` and `AGENT_RELAY_STATUS_PROJECTS` to have it
+posted to Slack on a cadence.
+
+### The whole portfolio at once
+
+```bash
+curl -s "$AGENT_RELAY_URL/coordination/overview"
+```
+
+`GET /coordination/overview` runs the same deterministic rules across every project
+and adds the one signal that only exists at that level — an agent holding claims in
+more than one project:
+
+```json
+{
+  "overloaded_agents": [
+    {
+      "agent": "leo-codex",
+      "project_count": 2,
+      "task_count": 2,
+      "projects": { "tether": ["GH-142"], "drends": ["GH-201"] }
+    }
+  ],
+  "suggested_actions": [
+    "leo-codex holds claims in 2 projects (drends GH-201, tether GH-142) — consider releasing one"
+  ]
+}
+```
+
+### A dashboard, deliberately small
+
+`GET /dashboard` is one self-contained HTML file: no build step, no npm, no CDN, no
+external requests at all. It shows blocked work and open questions first — the things
+needing a human — then claims, activity and suggested actions. Read-only; it never
+POSTs. Light and dark. Disable with `AGENT_RELAY_DASHBOARD=false`.
+
+### MCP: agents stop needing the CLI
+
+The biggest ergonomic win. Instead of remembering commands, Claude Code and Codex get
+relay tools natively:
+
+```bash
+uv sync --extra mcp
+claude mcp add agent-relay -- agent-relay-mcp
+```
+
+Twelve tools (`get_context`, `claim_task`, `post_update`, `handoff_task`, …) with
+descriptions written for an agent deciding *whether to call*, plus
+`relay://context/{project}` and `relay://tasks` as resources. Works with both mcp 1.x
+and 2.x. Identity still comes from `AGENT_NAME` / `HUMAN_OWNER`.
+
+### A2A
+
+`GET /.well-known/agent.json` serves an A2A agent card (open, so discovery works
+before credentials); `POST /a2a` accepts JSON-RPC 2.0 `message/send`. This is an
+honest subset: three text intents (project context, task list, post update). Streaming,
+task lifecycle methods, push notifications and non-text parts are **not** implemented,
+and the card says so.
+
+### Experiment links
+
+Write `wandb:run-abc123` or `mlflow:1/run-def` in an event's `artifacts` and the relay
+expands it to a URL using `WANDB_ENTITY` / `WANDB_PROJECT` / `MLFLOW_TRACKING_URI`.
+Link-only by design: no tracker SDKs, no API calls, nothing to break when W&B is down.
+
+### Upgrading from V1
+
+Just run it. On boot the relay adds the new columns and tables to an existing database
+additively — nothing is dropped, renamed or retyped, and your event history is
+preserved. Back up the SQLite file first anyway; it is one file.
+
+
 ## Configuration
 
 Everything is environment variables; see [.env.example](.env.example). Zero
@@ -315,6 +504,24 @@ configuration is a valid configuration — SQLite, no auth, no Slack, no GitHub.
 | `GITHUB_TOKEN` | *(unset)* | Optional, for reading issue/PR metadata |
 | `GITHUB_TASK_PREFIX` | `GH-` | `GH-142` → issue 142 |
 | `AGENT_RELAY_URL` / `AGENT_NAME` / `HUMAN_OWNER` | — | CLI identity |
+
+V2 additions (all optional, all off unless set):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SLACK_BOT_TOKEN` / `SLACK_SIGNING_SECRET` | *(unset)* | Enables the bidirectional bot |
+| `SLACK_DEFAULT_CHANNEL` / `SLACK_CHANNEL_MAP` | *(unset)* | Per-project channel routing |
+| `GITHUB_WEBHOOK_SECRET` | *(unset)* | Enables `POST /webhooks/github` |
+| `GITHUB_POLL_INTERVAL_SECONDS` | `0` | Polling fallback when no public URL exists |
+| `AGENT_RELAY_CLAIM_STALE_HOURS` | `24` | When a claim is *reported* stale |
+| `AGENT_RELAY_CLAIM_EXPIRY_HOURS` | `0` | When it is *auto-released*. `0` = never |
+| `AGENT_RELAY_HEARTBEAT_ONLINE_SECONDS` | `300` | Freshness for "online", then "idle" |
+| `ANTHROPIC_API_KEY` | *(unset)* | Enables LLM briefings; without it they stay rule-based |
+| `COORDINATOR_MODEL` / `COORDINATOR_EFFORT` | `claude-opus-5` / `low` | Coordinator tuning |
+| `AGENT_RELAY_STATUS_INTERVAL_MINUTES` | `0` | Scheduled Slack status. `0` = off |
+| `WANDB_ENTITY` / `WANDB_PROJECT` / `MLFLOW_TRACKING_URI` | *(unset)* | Experiment link expansion |
+| `AGENT_RELAY_DASHBOARD` | `true` | Serve `/dashboard` |
+| `AGENT_RELAY_PUBLIC_URL` | *(unset)* | Advertised URL in the A2A card |
 
 ### Slack
 
@@ -407,7 +614,15 @@ The image runs as a non-root user and ships a `/health` healthcheck.
 ## Integrating an agent
 
 The point of all this is that Claude Code, Codex or any other agent can use it with a
-few lines in their instruction file. [docs/AGENT_PROTOCOL.md](docs/AGENT_PROTOCOL.md)
+few lines in their instruction file — or, better, with no lines at all:
+
+```bash
+uv sync --extra mcp
+claude mcp add agent-relay -- agent-relay-mcp    # tools appear natively
+```
+
+With MCP configured, an agent calls `get_context` and `claim_task` as tools and never
+needs to learn the CLI. Without it, the CLI path below works everywhere. [docs/AGENT_PROTOCOL.md](docs/AGENT_PROTOCOL.md)
 defines the protocol and carries copy-paste blocks for `CLAUDE.md`, `AGENTS.md`, Codex
 instructions and a generic system prompt. The shape of it:
 
@@ -425,6 +640,10 @@ do not work on it; pick something else or coordinate.
 
 Post an UPDATE at milestones and findings, a QUESTION when another agent likely
 knows, a BLOCKED when you cannot continue, a DECISION only for durable choices.
+Send a heartbeat every few minutes while working so your claim is not swept:
+
+    agent-relay heartbeat --project <project> --task <task> --note "<what you are doing>"
+
 When finished, release the task or hand it off.
 
 GitHub remains the source of truth. Never treat a Slack message as a durable
@@ -448,9 +667,19 @@ agent-coordination-hub/
 │   │   ├── context.py       #   GET /context
 │   │   ├── coordination.py  #   GET /coordination/summary
 │   │   ├── slack.py         #   best-effort rendering + posting
-│   │   └── github.py        #   read-only links and metadata
+│   │   ├── slack_bot.py     #   V2: two-way Slack, thread round-trip
+│   │   ├── github.py        #   read-only links and metadata
+│   │   ├── github_ingest.py #   V2: webhook + polling ingestion
+│   │   ├── presence.py      #   V2: heartbeats, stale claims, the sweep
+│   │   ├── scheduler.py     #   V2: the opt-in background jobs
+│   │   ├── coordinator.py   #   V2: prose on top of the deterministic summary
+│   │   ├── overview.py      #   V2: cross-project coordination
+│   │   ├── experiments.py   #   V2: W&B / MLflow links
+│   │   └── a2a.py           #   V2: agent card + message/send
+│   ├── mcp/                 # V2: MCP server (optional extra)
+│   ├── static/              # V2: the dashboard, one HTML file
 │   └── cli/                 # agent-relay (client.py, render.py, main.py)
-├── tests/                   # 88 tests, no external credentials needed
+├── tests/                   # 287 tests, no external credentials needed
 ├── docs/
 │   ├── ARCHITECTURE.md      # design, data model, rules, what is deliberately absent
 │   ├── AGENT_PROTOCOL.md    # how an agent must behave + integration snippets
@@ -472,14 +701,19 @@ everything else is derived and could be rebuilt from it.
 |---|---|
 | `events` | The structured log. Never updated, never deleted |
 | `task_claims` | Ownership, with a partial unique index on `(project, task) WHERE active` |
-| `agents` | Derived registry: first/last seen, human owner |
+| `agents` | Derived registry: first/last seen, human owner, and V2 presence |
 | `projects` | Derived registry |
+| `ingest_records` | V2: idempotency ledger, so a retried webhook cannot double-post |
+
+Schema changes are applied additively on boot (`db/migrate.py`): columns and tables are
+added, never dropped, renamed or retyped. The day that is not enough is the day to
+adopt Alembic, not to extend it.
 
 ## Development
 
 ```bash
 uv sync
-uv run pytest                 # 88 tests, ~1s, no Slack or GitHub credentials required
+uv run pytest                 # 287 tests, ~5s, no Slack, GitHub or Anthropic credentials required
 uv run ruff check . && uv run ruff format --check .
 uv run mypy                   # strict
 ./scripts/dev.sh check        # all of the above
@@ -492,21 +726,41 @@ are mocked at the transport layer.
 
 ## Deliberately not here
 
-YAGNI, enforced. This is a tool for three researchers that should be readable in one
-sitting.
+YAGNI, still enforced. This is a tool for three researchers that should be readable in
+one sitting.
 
-No Kubernetes. No Kafka. No Redis. No vector database. No LLM dependency. No web
-dashboard. No microservices. No reimplementation of GitHub Issues. No elaborate
-permission system. No abstraction without a caller.
+No Kubernetes. No Kafka. No Redis. No vector database. No microservices. No
+reimplementation of GitHub Issues. No per-agent identity system. No abstraction
+without a caller. The scheduler is an `asyncio` task, not Celery. The dashboard is one
+HTML file, not a frontend project. The migration is 60 lines, not Alembic.
 
-### Future ideas — not implemented
+Two dependencies were added in V2, both **optional extras** so the base install stays
+exactly as small as V1's:
 
-Kept here so they stay ideas until the MVP has earned them: Slack bidirectional bot ·
-agents reading questions directly from Slack · GitHub webhook ingestion · automatic
-PR/event ingestion · experiment tracker integration (W&B, MLflow) · agent heartbeat and
-presence · stale claim detection · coordinator LLM · automatic conflict detection ·
-automated hourly team status · per-project Slack channels · cross-project coordinator ·
-web dashboard · MCP server interface · A2A agent-to-agent protocol support.
+```bash
+uv sync                        # base: fastapi, uvicorn, sqlalchemy, pydantic, httpx, typer
+uv sync --extra coordinator    # + anthropic, only if you want LLM briefings
+uv sync --extra mcp            # + mcp, only if your agents speak MCP
+uv sync --extra all            # both
+```
+
+Everything works without either. The test suite passes without either.
+
+### The LLM is not load-bearing
+
+Worth stating plainly, because it is the easiest thing to get wrong: the coordination
+rules are deterministic and always run. The model only rewrites their output as prose.
+Pull the API key and you lose a paragraph of English, not a single coordination
+decision. That is why `/coordination/brief` always returns the audited `summary`
+alongside the prose — so anyone can check the second against the first.
+
+### Still not implemented
+
+Genuinely remaining, kept as ideas until they earn their place: agent-to-agent direct
+messaging beyond A2A `message/send`; multi-tenant / per-agent authentication; a
+Postgres backend; event replay and time-travel queries; automatic task decomposition;
+richer A2A (streaming, task lifecycle, push notifications); a mobile view; and
+retention/archival policy for very long event logs.
 
 ## License
 
