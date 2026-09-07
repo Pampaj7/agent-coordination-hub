@@ -1,0 +1,37 @@
+# Agent Relay — single service. Compose v2 (no `version:` key; it is obsolete).
+#
+#   Requires a .env file next to this one:   cp .env.example .env
+#   Then:                                    docker compose up -d --build
+#   Health:                                  curl localhost:8077/health
+
+services:
+  relay:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: agent-relay:local
+    container_name: agent-relay
+    # Must exist — create it with `cp .env.example .env` before `up`.
+    env_file: .env
+    environment:
+      # Override .env: inside the container we bind all interfaces and use the
+      # volume-backed absolute SQLite path (note the four slashes).
+      AGENT_RELAY_HOST: 0.0.0.0
+      AGENT_RELAY_PORT: "8077"
+      AGENT_RELAY_DB_URL: sqlite:////data/agent_relay.db
+    ports:
+      - "8077:8077"
+    volumes:
+      # Named volume so the SQLite database survives rebuilds.
+      - relay-data:/data
+    restart: unless-stopped
+    # Uses the HEALTHCHECK baked into the Dockerfile; only timings tuned here.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8077/health', timeout=4).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  relay-data:

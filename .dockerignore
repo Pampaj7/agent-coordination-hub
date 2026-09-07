@@ -1,0 +1,38 @@
+# Keep the build context small and free of secrets / local state.
+
+# VCS
+.git
+.gitignore
+.github
+
+# Local Python environments and caches
+.venv
+venv
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.ruff_cache
+.mypy_cache
+
+# Secrets and local runtime data (the container gets /data instead)
+.env
+.env.*
+!.env.example
+data/
+*.db
+*.sqlite3
+
+# Not needed to build or run the service
+tests/
+docs/
+
+# Build artefacts
+*.egg-info
+dist/
+build/
+
+# Editor / OS cruft
+.idea/
+.vscode/
+.DS_Store
