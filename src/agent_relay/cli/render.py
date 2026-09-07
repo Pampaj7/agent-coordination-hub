@@ -334,3 +334,48 @@ def render_brief(result: dict[str, Any]) -> str:
         f"=== BRIEF · {result.get('project')} (last {result.get('window_hours')}h · {tag}) ===\n\n"
         f"{result.get('brief', '')}"
     )
+
+
+def render_inbox(inbox: dict[str, Any]) -> str:
+    """Short, imperative, and explicit when there is nothing to do."""
+    questions = inbox.get("questions_for_me") or []
+    handoffs = inbox.get("handoffs_to_me") or []
+    stalled = inbox.get("my_tasks_needing_attention") or []
+    holding = inbox.get("my_claims") or []
+
+    if not (questions or handoffs or stalled):
+        return (
+            f"✅ Niente in attesa per {inbox.get('agent')}. "
+            f"In carico: {', '.join(holding) or 'niente'}."
+        )
+
+    out = [f"=== INBOX · {inbox.get('agent')} ==="]
+    if questions:
+        out.append("\n❓ DOMANDE PER TE")
+        for q in questions:
+            where = f" [{q['task']}]" if q.get("task") else ""
+            out.append(
+                f"  {q['ref']}{where} da {q['from_agent']} ({q['age_hours']}h): {q['question']}"
+            )
+            out.append(f"      → {q['answer_with']}")
+    if handoffs:
+        out.append("\n🤝 PASSATI A TE")
+        for h in handoffs:
+            where = f" [{h['task']}]" if h.get("task") else ""
+            head = f"  {h['ref']}{where} da {h['from_agent']} ({h['received_hours_ago']}h)"
+            out.append(f"{head}: {h['summary']}")
+            if h.get("continue_from"):
+                out.append(f"      riparti da: {h['continue_from']}")
+            for item in h.get("inputs") or []:
+                out.append(f"      input: {item}")
+            for warning in h.get("warnings") or []:
+                out.append(f"      ⚠  {warning}")
+    if stalled:
+        out.append("\n🚧 TUOI TASK FERMI")
+        for t in stalled:
+            out.append(
+                f"  {t['project']}/{t['task']}: {t['reason']} (fermo da {t.get('idle_hours')}h)"
+            )
+    if holding:
+        out.append("\nIN CARICO: " + ", ".join(holding))
+    return "\n".join(out)

@@ -286,6 +286,25 @@ def tool_get_context(
     return ToolResult(text, payload)
 
 
+def inbox_text(payload: dict[str, Any]) -> str:
+    """Render an inbox for a model to read.
+
+    Deliberately imperative and short: each item says what it is and what closes it,
+    because an agent that has to infer the next action from a data dump usually
+    infers nothing.
+    """
+    from agent_relay.services.inbox import Inbox, as_text
+
+    return as_text(Inbox.model_validate(payload))
+
+
+@_readable
+def tool_my_inbox(client: RelayClient, project: str | None = None) -> ToolResult:
+    agent, _owner = resolve_identity()
+    payload = client.get("/inbox", agent=agent, project=project)
+    return ToolResult(inbox_text(payload), payload)
+
+
 @_readable
 def tool_coordination_summary(client: RelayClient, project: str) -> ToolResult:
     payload = client.get("/coordination/summary", project=project)
@@ -538,6 +557,21 @@ def get_context(project: str, window_hours: int | None = None) -> str:
     return tool_get_context(make_client(), project, window_hours).text
 
 
+def my_inbox(project: str | None = None) -> str:
+    """Check whether anything is waiting specifically for YOU.
+
+    Narrower than get_context, and the one to call when you want to know if you owe
+    anyone something: questions another agent addressed to you and nobody has
+    answered, work handed to you (with the warnings you must read before touching
+    it), and tasks you hold that have stopped moving. An empty result is a real
+    answer — it means you are clear.
+
+    Call it at the start of a session alongside get_context, and again before you
+    finish, so you do not leave a teammate blocked on a question you never saw.
+    """
+    return tool_my_inbox(make_client(), project).text
+
+
 def claim_task(project: str, task: str, branch: str | None = None, note: str | None = None) -> str:
     """Take ownership of a task before you start modifying anything for it.
 
@@ -686,6 +720,7 @@ def coordination_summary(project: str) -> str:
 #: the order an agent should work in.
 TOOLS: tuple[Callable[..., str], ...] = (
     get_context,
+    my_inbox,
     claim_task,
     release_task,
     handoff_task,

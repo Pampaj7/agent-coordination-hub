@@ -636,6 +636,26 @@ def tui(
         _fail(exc)
 
 
+@app.command()
+def inbox(
+    agent: AgentOpt = None,
+    project: Annotated[str | None, typer.Option("--project", "-p")] = None,
+    as_json: JsonOpt = False,
+) -> None:
+    """What is waiting for you: questions you were asked, handoffs, your stalled tasks.
+
+    Narrower than `context` on purpose. Run this when you want to know whether anything
+    needs you, rather than what is going on generally.
+    """
+    agent_name, _owner = _identity(agent, None)
+    try:
+        payload = _client().get("/inbox", agent=agent_name, project=project)
+    except RelayError as exc:
+        _fail(exc)
+        return
+    _emit(payload, render.render_inbox(payload), as_json)
+
+
 def main() -> None:
     try:
         app()

@@ -318,6 +318,7 @@ def test_every_advertised_tool_exists_and_is_documented() -> None:
     """The docstrings become the descriptions the model reads, so they are required."""
     expected = {
         "get_context",
+        "my_inbox",
         "claim_task",
         "release_task",
         "handoff_task",
