@@ -76,6 +76,9 @@ def event_line(event: dict[str, Any]) -> str:
 
 def render_event(event: dict[str, Any]) -> str:
     out = [event_line(event)]
+    if warning := event.get("delivery_warning"):
+        # Loud, because the failure it describes is otherwise completely silent.
+        out.append(f"        ⚠️  {warning}")
     for key, value in (event.get("details") or {}).items():
         rows = _lines(value)
         if rows:

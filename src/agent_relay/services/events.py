@@ -170,6 +170,27 @@ def list_events(
     return list(session.execute(stmt).scalars())
 
 
+def delivery_warning(session: Session, target_agent: str | None) -> str | None:
+    """Warn when a message names an agent the relay has never seen.
+
+    Addressing a teammate by a name that does not exist is silent by nature: the event
+    stores fine, and it simply never appears in anyone's inbox. That failure was found
+    the hard way — a handoff sat unread while its recipient waited, blocked, for a
+    human to notice. Telling the sender at write time is the only point where it is
+    still cheap to fix.
+    """
+    if not target_agent:
+        return None
+    if session.get(Agent, target_agent) is not None:
+        return None
+    known = sorted(name for name in session.execute(select(Agent.name)).scalars())
+    suffix = f" Known agents: {', '.join(known)}." if known else " No agents are registered yet."
+    return (
+        f"No agent named {target_agent!r} has ever contacted this relay, so this will not "
+        f"reach anyone's inbox.{suffix}"
+    )
+
+
 def to_out(event: Event, github: GitHubService | None = None) -> EventOut:
     """DB row -> wire model, with a GitHub link attached when we can build one."""
     github_url = github.task_url(event.task) if github else None

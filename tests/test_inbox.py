@@ -252,3 +252,61 @@ def test_the_text_says_when_a_message_was_addressed_elsewhere(client: TestClient
     )
     text = as_text(Inbox.model_validate(inbox(client, "nachomar-gpt")))
     assert "sent to niccolo-sonnet-5" in text, "the agent must know it was not the named one"
+
+
+def test_addressing_an_unknown_agent_warns_the_sender(client: TestClient) -> None:
+    """Regression: naming a recipient that does not exist failed silently.
+
+    The event stored fine and simply never appeared in anyone's inbox. In real use a
+    handoff sat unread while its intended recipient waited, blocked, for a human to
+    notice. Write time is the only moment when this is still cheap to fix.
+    """
+    post_event(client, agent="nachomar-gpt", human_owner="niccolo", summary="hello")
+
+    response = client.post(
+        "/events",
+        json={
+            "event_type": "QUESTION",
+            "agent": "pampaj-opus-5",
+            "project": "tether",
+            "target_agent": "niccolo-sonnet-5",  # never came online
+            "summary": "will you take GH-3?",
+        },
+    )
+    warning = response.json()["delivery_warning"]
+    assert warning is not None
+    assert "niccolo-sonnet-5" in warning
+    assert "nachomar-gpt" in warning, "the sender should be told who does exist"
+
+
+def test_no_warning_for_a_recipient_that_exists(client: TestClient) -> None:
+    post_event(client, agent="nachomar-gpt", human_owner="niccolo", summary="hello")
+    response = client.post(
+        "/events",
+        json={
+            "event_type": "QUESTION",
+            "agent": "pampaj-opus-5",
+            "project": "tether",
+            "target_agent": "nachomar-gpt",
+            "summary": "all good?",
+        },
+    )
+    assert response.json()["delivery_warning"] is None
+
+
+def test_a_handoff_to_a_ghost_warns_too(client: TestClient) -> None:
+    response = client.post(
+        "/handoff",
+        json={
+            "agent": "pampaj-opus-5",
+            "target_agent": "nobody-here",
+            "project": "tether",
+            "task": "GH-3",
+            "summary": "over to you",
+        },
+    )
+    assert "nobody-here" in response.json()["delivery_warning"]
+
+
+def test_an_event_with_no_recipient_is_never_warned(client: TestClient) -> None:
+    assert post_event(client, summary="just an update")["delivery_warning"] is None

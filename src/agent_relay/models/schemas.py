@@ -67,6 +67,11 @@ class EventOut(BaseModel):
         default="agent",
         description='Where the event came from: "agent", "github", "slack" or "a2a".',
     )
+    delivery_warning: str | None = Field(
+        default=None,
+        description="Set when the event names a target_agent the relay has never seen. "
+        "The message is stored, but nobody's inbox will surface it.",
+    )
     github_url: str | None = None
 
 

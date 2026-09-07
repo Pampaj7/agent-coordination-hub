@@ -164,7 +164,9 @@ def post_event(
     session.refresh(event)
 
     _notify_slack(background, slack, github, event_service.to_slack_payload(event))
-    return event_service.to_out(event, github)
+    out = event_service.to_out(event, github)
+    out.delivery_warning = event_service.delivery_warning(session, payload.target_agent)
+    return out
 
 
 @router.get("/events", response_model=list[EventOut], tags=["events"])
@@ -273,7 +275,9 @@ def post_handoff(
         raise _conflict(exc, session) from exc
 
     _notify_slack(background, slack, github, event_service.to_slack_payload(event))
-    return event_service.to_out(event, github)
+    out = event_service.to_out(event, github)
+    out.delivery_warning = event_service.delivery_warning(session, payload.target_agent)
+    return out
 
 
 @router.get("/claims", response_model=list[ClaimOut], tags=["claims"])
