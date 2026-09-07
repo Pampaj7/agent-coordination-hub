@@ -103,6 +103,17 @@ class Settings(BaseSettings):
     wandb_project: str | None = Field(default=None, alias="WANDB_PROJECT")
     mlflow_tracking_uri: str | None = Field(default=None, alias="MLFLOW_TRACKING_URI")
 
+    # --- tailnet identity ---
+    #: Identify callers by their Tailscale account instead of a shared secret.
+    tailscale_auth: bool = Field(default=False, alias="AGENT_RELAY_TAILSCALE_AUTH")
+    tailscale_binary: str = Field(default="tailscale", alias="AGENT_RELAY_TAILSCALE_BINARY")
+    #: Map a tailnet login to the short human_owner used in events:
+    #: "leonardo.gameplay666@gmail.com=leonardo,nic@example.com=niccolo"
+    tailscale_owner_map: str | None = Field(default=None, alias="AGENT_RELAY_OWNER_MAP")
+    #: Keep accepting the shared token as well. Off by default: with identity on, a
+    #: token that still works is a way to stay anonymous.
+    tailscale_allow_token: bool = Field(default=False, alias="AGENT_RELAY_ALLOW_TOKEN")
+
     # --- dashboard (V2) ---
     dashboard_enabled: bool = Field(default=True, alias="AGENT_RELAY_DASHBOARD")
     public_base_url: str | None = Field(default=None, alias="AGENT_RELAY_PUBLIC_URL")
@@ -130,6 +141,7 @@ class Settings(BaseSettings):
         "wandb_project",
         "mlflow_tracking_uri",
         "public_base_url",
+        "tailscale_owner_map",
         mode="before",
     )
     @classmethod
@@ -182,6 +194,23 @@ class Settings(BaseSettings):
         return self.github_enabled and self.github_poll_interval_seconds > 0
 
     @property
+    def tailscale_auth_enabled(self) -> bool:
+        return self.tailscale_auth
+
+    @property
+    def owner_map(self) -> dict[str, str]:
+        """Parse AGENT_RELAY_OWNER_MAP into {tailnet login: human_owner}."""
+        mapping: dict[str, str] = {}
+        for pair in (self.tailscale_owner_map or "").split(","):
+            login, sep, owner = pair.partition("=")
+            if sep and login.strip() and owner.strip():
+                mapping[login.strip().lower()] = owner.strip()
+        return mapping
+
+    def owner_for(self, login_name: str) -> str | None:
+        return self.owner_map.get(login_name.lower())
+
+    @property
     def coordinator_enabled(self) -> bool:
         """Whether to attempt an LLM briefing at all.
 
@@ -223,6 +252,7 @@ class Settings(BaseSettings):
             "coordinator_llm": self.coordinator_enabled,
             "auto_release": self.auto_release_enabled,
             "dashboard": self.dashboard_enabled,
+            "tailscale_auth": self.tailscale_auth_enabled,
         }
 
 

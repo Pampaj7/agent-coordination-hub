@@ -5,11 +5,18 @@ from __future__ import annotations
 import datetime as dt
 from typing import Annotated, Any
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, status
 from sqlalchemy import text
 
 from agent_relay import __version__
-from agent_relay.api.deps import AuthDep, GitHubDep, SessionDep, SettingsDep, SlackDep
+from agent_relay.api.deps import (
+    AuthDep,
+    GitHubDep,
+    SessionDep,
+    SettingsDep,
+    SlackDep,
+    caller_owner,
+)
 from agent_relay.config import redact_db_url
 from agent_relay.db.models import utcnow
 from agent_relay.models.enums import EventType
@@ -68,13 +75,33 @@ def health(session: SessionDep, settings: SettingsDep) -> HealthOut:
             "coordinator_llm": "enabled" if settings.coordinator_enabled else "disabled",
             "auto_release": "enabled" if settings.auto_release_enabled else "disabled",
             "dashboard": "enabled" if settings.dashboard_enabled else "disabled",
-            "auth": "required" if settings.api_token else "open",
+            "tailscale_auth": "enabled" if settings.tailscale_auth_enabled else "disabled",
+            "auth": (
+                "tailnet-identity"
+                if settings.tailscale_auth_enabled
+                else ("required" if settings.api_token else "open")
+            ),
             "db_url": redact_db_url(settings.db_url),
         },
     )
 
 
 # --------------------------------------------------------------------------- helpers
+
+
+def _attributed(payload: Any, request: Request, settings: Any) -> Any:
+    """Stamp the caller's real identity onto a write, when the tailnet knows it.
+
+    Identity *overrides* a self-declared `human_owner` rather than merely filling a
+    blank one. That is the entire point of turning it on: with a shared token any
+    agent can post as anyone, and a field that can be set to a convenient value is not
+    an attribution. Agent names stay self-declared — one person legitimately runs
+    several — but the human behind them stops being a guess.
+    """
+    owner = caller_owner(request, settings)
+    if owner is None:
+        return payload
+    return payload.model_copy(update={"human_owner": owner})
 
 
 def _notify_slack(
@@ -126,8 +153,11 @@ def post_event(
     github: GitHubDep,
     slack: SlackDep,
     background: BackgroundTasks,
+    request: Request,
+    settings: SettingsDep,
 ) -> EventOut:
     """Record a structured coordination event."""
+    payload = _attributed(payload, request, settings)
     event = event_service.create_event(session, payload, commit=False)
     claim_service.touch_claim(session, payload.project, payload.task, payload.agent)
     session.commit()
@@ -183,8 +213,11 @@ def post_claim(
     github: GitHubDep,
     slack: SlackDep,
     background: BackgroundTasks,
+    request: Request,
+    settings: SettingsDep,
 ) -> ClaimOut:
     """Claim a task. 409 with the current owner's details if someone already holds it."""
+    payload = _attributed(payload, request, settings)
     try:
         claim, created = claim_service.claim_task(session, payload)
     except ClaimConflict as exc:
@@ -204,8 +237,11 @@ def post_release(
     github: GitHubDep,
     slack: SlackDep,
     background: BackgroundTasks,
+    request: Request,
+    settings: SettingsDep,
 ) -> ClaimOut:
     """Release a task claim."""
+    payload = _attributed(payload, request, settings)
     try:
         claim = claim_service.release_task(session, payload)
     except ClaimNotFound as exc:
@@ -226,8 +262,11 @@ def post_handoff(
     github: GitHubDep,
     slack: SlackDep,
     background: BackgroundTasks,
+    request: Request,
+    settings: SettingsDep,
 ) -> EventOut:
     """Hand a task to another agent, moving the claim with it by default."""
+    payload = _attributed(payload, request, settings)
     try:
         event, _claim = claim_service.handoff_task(session, payload)
     except ClaimConflict as exc:
