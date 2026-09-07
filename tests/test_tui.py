@@ -367,3 +367,67 @@ def test_stat_labels_pluralise_correctly(count: int, expected: list[str]) -> Non
     out = text_of(tui.render_stats(context, agents))
     for phrase in expected:
         assert phrase in out
+
+
+def test_findings_panel_shows_what_was_learned() -> None:
+    """The activity stream shows what happened; this shows what is now known."""
+    summary = {
+        "project": "event-rgb",
+        "recent_findings": [
+            "[GH-2] zero paper PubMed su event camera in chirurgia — pampaj-opus-5",
+            "[GH-2] la calibrazione cross-modale resta aperta — niccolo-claude",
+        ],
+    }
+    out = text_of(tui.render_findings(summary), width=140)
+    assert "FINDINGS" in out and "event-rgb" in out
+    assert "GH-2" in out
+    assert "zero paper PubMed" in out
+    assert "pampaj-opus-5" in out
+
+
+def test_findings_panel_has_an_empty_state_that_says_what_to_do() -> None:
+    out = text_of(tui.render_findings({"project": "event-rgb", "recent_findings": []}))
+    assert "Nothing recorded yet" in out
+    assert "findings=" in out, "the empty state should name the flag that fills it"
+
+
+@pytest.mark.parametrize(
+    ("entry", "expected"),
+    [
+        ("[GH-2] EPE improved 0.7% — leo-codex", ("GH-2", "EPE improved 0.7%", "leo-codex")),
+        ("no task here — someone", ("", "no task here", "someone")),
+        ("bare finding with no attribution", ("", "bare finding with no attribution", "")),
+        ("[GH-9] em — dash — in — text — agent", ("GH-9", "em — dash — in — text", "agent")),
+    ],
+)
+def test_finding_strings_split_into_columns(entry: str, expected: tuple[str, str, str]) -> None:
+    """The relay ships these pre-formatted; splitting them back keeps the columns aligned.
+
+    The last case matters: an em dash inside the finding itself must not be mistaken
+    for the attribution separator, so the split takes the *last* one.
+    """
+    assert tui._split_finding(entry) == expected
+
+
+def test_wide_terminals_get_two_columns_and_narrow_ones_do_not() -> None:
+    """Purpose-split, not size-split: attention on the left, ambient state on the right."""
+    frame = tui.Frame(
+        project="event-rgb",
+        focus_project="event-rgb",
+        base_url="http://relay",
+        fetched_at=dt.datetime.now(dt.UTC),
+        context={"blocked_tasks": [], "unresolved_questions": [], "active_claims": []},
+        summary={"project": "event-rgb", "suggested_actions": [], "recent_findings": []},
+        agents=[],
+        events=[],
+        tasks=[],
+    )
+    wide = text_of(tui.render_dashboard(frame), width=170).splitlines()
+    narrow = text_of(tui.render_dashboard(frame), width=100).splitlines()
+
+    # Side by side, one line carries two panel borders; stacked, never more than one.
+    assert any(line.count("╭─") == 2 for line in wide), "wide should place panels side by side"
+    assert all(line.count("╭─") <= 1 for line in narrow), "narrow must stay single column"
+    # Both layouts must still contain every panel.
+    for heading in ("BLOCKED", "OPEN QUESTIONS", "FINDINGS", "WHO IS WORKING", "RECENT ACTIVITY"):
+        assert heading in "\n".join(wide) and heading in "\n".join(narrow)

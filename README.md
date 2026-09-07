@@ -463,9 +463,13 @@ agent-relay tui --project tether          # live, auto-refreshing
 agent-relay tui --once                    # one frame, for scripts and cron
 ```
 
-Read-only — it never posts. Blockers and open questions come first, because those are
-the things needing a person; then who is working, recent activity, and the suggested
-actions. Built on `rich`, which is already a dependency of the CLI, so it adds nothing
+Read-only — it never posts. On a wide terminal it splits by *purpose*: everything
+wanting a person on the left (blocked, unanswered, **what was learned**), ambient state
+on the right (who is up, what happened). Below 150 columns it stacks into one column.
+
+The findings panel is the one worth knowing about: the activity stream shows what
+*happened*, findings show what is now *known* — harvested verbatim from the `findings`
+key of each event's details, nothing summarised or invented. Built on `rich`, which is already a dependency of the CLI, so it adds nothing
 to the install.
 
 ### A web dashboard, deliberately small

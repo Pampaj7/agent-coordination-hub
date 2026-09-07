@@ -37,6 +37,9 @@ from agent_relay.models.enums import EVENT_LABELS
 #: blocker posted by a teammate is on screen before you finish reading the line above.
 DEFAULT_INTERVAL = 10.0
 
+#: Findings shown at once. Beyond this the panel stops being a glance.
+MAX_FINDINGS = 8
+
 #: How many events the activity panel asks for. More than fits, so a short terminal
 #: still shows the newest ones and a tall one is not half empty.
 EVENT_LIMIT = 15
@@ -235,12 +238,17 @@ def render_stats(context: dict[str, Any], agents: list[dict[str, Any]]) -> Panel
         stat("❓", questions, "open question", "open questions", alarming=True),
         stat("🟢", online, "agent online", "agents online", alarming=False),
     ]
-    # Columns re-flows on a narrow terminal instead of running off the right edge.
-    return _panel(
-        "AT A GLANCE",
-        Columns(cells, equal=True, expand=True),
-        style="red" if blocked or questions else "cyan",
-    )
+    # Joined with separators rather than spread edge-to-edge: on a wide terminal
+    # `Columns(expand=True)` pushes the four numbers into the corners, so reading them
+    # becomes a saccade instead of a glance. Columns still does the re-flow when the
+    # line will not fit.
+    line = Text()
+    for index, cell in enumerate(cells):
+        if index:
+            line.append("   ·   ", style="dim")
+        line.append_text(cell)
+    body: RenderableType = line if len(line) <= 96 else Columns(cells, equal=True, expand=True)
+    return _panel("AT A GLANCE", body, style="red" if blocked or questions else "cyan")
 
 
 def render_blocked(context: dict[str, Any]) -> Panel:
@@ -353,6 +361,53 @@ def render_actions(summary: dict[str, Any]) -> Panel:
     return _panel(title, body, style="magenta")
 
 
+def render_findings(summary: dict[str, Any]) -> Panel:
+    """What was actually learned, in a few words each.
+
+    The activity stream shows what *happened*; this shows what is now *known*. They
+    are different questions, and the second is the one you carry into a standup. The
+    relay already harvests these from the `findings` key of an event's details, so
+    what a teammate wrote as a finding is what appears here — no summarising, no
+    paraphrase, nothing invented.
+    """
+    findings = summary.get("recent_findings") or []
+    title = "💡 FINDINGS" + (f" · {summary['project']}" if summary.get("project") else "")
+    if not findings:
+        return _panel(
+            title,
+            Text('· Nothing recorded yet — post with --detail "findings=…"', style="dim"),
+            style="grey50",
+        )
+    table = _grid(("TASK", 10), ("FINDING", None), ("BY", 14))
+    for entry in findings[:MAX_FINDINGS]:
+        # The relay formats these as "[GH-142] text — agent"; split it back apart so
+        # the columns line up instead of shipping one long pre-formatted string.
+        task, text, agent = _split_finding(str(entry))
+        table.add_row(
+            _cell(task, 12, style="cyan"),
+            _cell(text, 90, style="bold"),
+            _cell(agent, 14, style="dim"),
+        )
+    return _panel(title, table, style="yellow")
+
+
+def _split_finding(entry: str) -> tuple[str, str, str]:
+    """Split the relay's formatted finding back into its parts.
+
+    `"[GH-142] EPE improved 0.7% — leo-codex"` becomes
+    `("GH-142", "EPE improved 0.7%", "leo-codex")`.
+    """
+    task = ""
+    rest = entry
+    if rest.startswith("[") and "]" in rest:
+        task, _, rest = rest[1:].partition("]")
+        rest = rest.strip()
+    text, sep, agent = rest.rpartition(" — ")
+    if not sep:  # no attribution suffix; keep the whole thing as the finding
+        text, agent = rest, ""
+    return task.strip(), text.strip(), agent.strip()
+
+
 def render_dashboard(
     frame: Frame | None, *, interval: float = DEFAULT_INTERVAL, error: str | None = None
 ) -> RenderableType:
@@ -373,12 +428,51 @@ def render_dashboard(
     return Group(
         render_header(status),
         render_stats(frame.context, frame.agents),
-        render_blocked(frame.context),
-        render_questions(frame.context),
-        render_agents(frame.agents),
-        render_activity(frame.events),
+        _Responsive(frame),
         render_actions(frame.summary),
     )
+
+
+#: Below this width the two columns would each be too narrow to hold a task id plus
+#: a readable summary, so the layout falls back to a single column.
+TWO_COLUMN_MIN_WIDTH = 150
+
+
+class _Responsive:
+    """Two columns on a wide terminal, one on a narrow one.
+
+    Stacking everything vertically wastes half the screen on a modern terminal and
+    pushes the activity stream below the fold. Splitting by *purpose* rather than by
+    size keeps the reading order intact: the left column is everything that wants a
+    person (blocked, unanswered, learned), the right is ambient state (who is up,
+    what happened).
+
+    Implemented as a renderable rather than a width argument so the layout adapts to
+    the real console at print time — including a terminal resized while it is running.
+    """
+
+    def __init__(self, frame: Frame) -> None:
+        self.frame = frame
+
+    def __rich_console__(self, console: Console, options: Any) -> Any:
+        frame = self.frame
+        needs_attention = [
+            render_blocked(frame.context),
+            render_questions(frame.context),
+            render_findings(frame.summary),
+        ]
+        ambient = [
+            render_agents(frame.agents),
+            render_activity(frame.events),
+        ]
+        if options.max_width < TWO_COLUMN_MIN_WIDTH:
+            yield Group(*needs_attention, *ambient)
+            return
+        layout = Table.grid(expand=True, padding=(0, 1))
+        layout.add_column(ratio=1)
+        layout.add_column(ratio=1)
+        layout.add_row(Group(*needs_attention), Group(*ambient))
+        yield layout
 
 
 # --- the loop ---------------------------------------------------------------
