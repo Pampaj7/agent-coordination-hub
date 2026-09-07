@@ -618,6 +618,24 @@ def brief(
     _emit(payload, render.render_brief(payload), as_json)
 
 
+@app.command()
+def tui(
+    project: Annotated[str | None, typer.Option("--project", "-p")] = None,
+    interval: Annotated[float, typer.Option(help="Seconds between refreshes.")] = 10.0,
+    once: Annotated[bool, typer.Option("--once", help="Render one frame and exit.")] = False,
+) -> None:
+    """Live read-only dashboard: blockers, questions, who is working, recent activity.
+
+    Leave it open in a split pane. It only ever reads, so it is safe unattended.
+    """
+    from agent_relay.cli import tui as dashboard
+
+    try:
+        dashboard.run_tui(_client(), project=project, interval=interval, once=once)
+    except RelayError as exc:
+        _fail(exc)
+
+
 def main() -> None:
     try:
         app()

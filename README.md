@@ -215,6 +215,7 @@ agent-relay handoff --project tether --task GH-142 --to andrea-agent \
 agent-relay release --project tether --task GH-142 --summary "H=8 sweep complete."
 
 # Situational awareness
+agent-relay tui --project tether      # live terminal dashboard
 agent-relay tasks --project tether
 agent-relay summary --project tether
 agent-relay events --project tether --type update --limit 10
@@ -453,7 +454,21 @@ more than one project:
 }
 ```
 
-### A dashboard, deliberately small
+### A terminal dashboard
+
+The one you leave open in a split pane all day:
+
+```bash
+agent-relay tui --project tether          # live, auto-refreshing
+agent-relay tui --once                    # one frame, for scripts and cron
+```
+
+Read-only — it never posts. Blockers and open questions come first, because those are
+the things needing a person; then who is working, recent activity, and the suggested
+actions. Built on `rich`, which is already a dependency of the CLI, so it adds nothing
+to the install.
+
+### A web dashboard, deliberately small
 
 `GET /dashboard` is one self-contained HTML file: no build step, no npm, no CDN, no
 external requests at all. It shows blocked work and open questions first — the things
