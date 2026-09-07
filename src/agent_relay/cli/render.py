@@ -345,37 +345,34 @@ def render_inbox(inbox: dict[str, Any]) -> str:
 
     if not (questions or handoffs or stalled):
         return (
-            f"✅ Niente in attesa per {inbox.get('agent')}. "
-            f"In carico: {', '.join(holding) or 'niente'}."
+            f"✅ Nothing waiting for {inbox.get('agent')}. "
+            f"Holding: {', '.join(holding) or 'nothing'}."
         )
 
     out = [f"=== INBOX · {inbox.get('agent')} ==="]
     if questions:
-        out.append("\n❓ DOMANDE PER TE")
+        out.append("\n❓ QUESTIONS FOR YOU")
         for q in questions:
             where = f" [{q['task']}]" if q.get("task") else ""
-            out.append(
-                f"  {q['ref']}{where} da {q['from_agent']} ({q['age_hours']}h): {q['question']}"
-            )
+            head = f"  {q['ref']}{where} from {q['from_agent']} ({q['age_hours']}h)"
+            out.append(f"{head}: {q['question']}")
             out.append(f"      → {q['answer_with']}")
     if handoffs:
-        out.append("\n🤝 PASSATI A TE")
+        out.append("\n🤝 HANDED TO YOU")
         for h in handoffs:
             where = f" [{h['task']}]" if h.get("task") else ""
-            head = f"  {h['ref']}{where} da {h['from_agent']} ({h['received_hours_ago']}h)"
+            head = f"  {h['ref']}{where} from {h['from_agent']} ({h['received_hours_ago']}h)"
             out.append(f"{head}: {h['summary']}")
             if h.get("continue_from"):
-                out.append(f"      riparti da: {h['continue_from']}")
+                out.append(f"      continue from: {h['continue_from']}")
             for item in h.get("inputs") or []:
                 out.append(f"      input: {item}")
             for warning in h.get("warnings") or []:
                 out.append(f"      ⚠  {warning}")
     if stalled:
-        out.append("\n🚧 TUOI TASK FERMI")
+        out.append("\n🚧 YOUR TASKS THAT ARE NOT MOVING")
         for t in stalled:
-            out.append(
-                f"  {t['project']}/{t['task']}: {t['reason']} (fermo da {t.get('idle_hours')}h)"
-            )
+            out.append(f"  {t['project']}/{t['task']}: {t['reason']} (idle {t.get('idle_hours')}h)")
     if holding:
-        out.append("\nIN CARICO: " + ", ".join(holding))
+        out.append("\nHOLDING: " + ", ".join(holding))
     return "\n".join(out)
