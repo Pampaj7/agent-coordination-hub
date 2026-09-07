@@ -310,3 +310,27 @@ def test_garbage_output_is_not_an_identity(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(tailnet.subprocess, "run", lambda *a, **k: Junk())
     settings = Settings(AGENT_RELAY_DB_URL="sqlite://", AGENT_RELAY_TAILSCALE_AUTH=True)
     assert tailnet.whois(LEO_IP, settings) is None
+
+
+def test_a_heartbeat_is_attributed_like_any_other_write(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch, whois: FakeWhois
+) -> None:
+    """Regression: heartbeats bypassed tailnet attribution.
+
+    The heartbeat is what populates the agent registry, so leaving it unattributed
+    produced agents with a blank owner in `GET /agents` — the one view whose entire job
+    is telling you who is working. Found in real use: two of Niccolo's three agents had
+    no owner, because they had only ever sent heartbeats and never posted an event.
+    """
+    with build_relay(tmp_path, monkeypatch, whois) as client:
+        presence = client.post("/heartbeat", json={"agent": "leo-codex"}).json()
+        assert presence["human_owner"] == "leonardo", "a bare ping must still be attributed"
+
+        listed = client.get("/agents").json()
+        assert [a["human_owner"] for a in listed] == ["leonardo"]
+
+        # A declared owner does not override the tailnet, same rule as every other write.
+        client.post("/heartbeat", json={"agent": "leo-codex", "human_owner": "somebody-else"})
+        assert client.get("/agents").json()[0]["human_owner"] == "leonardo"
+    reset_engine()
+    get_settings.cache_clear()

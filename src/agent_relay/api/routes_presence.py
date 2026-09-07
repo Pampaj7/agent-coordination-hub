@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent_relay.api.deps import AuthDep, SessionDep, SettingsDep
+from agent_relay.api.deps import AuthDep, SessionDep, SettingsDep, caller_owner
 from agent_relay.services import presence as presence_service
 from agent_relay.services.presence import AgentPresence, StaleClaim, SweepReport
 
@@ -40,13 +40,21 @@ class HeartbeatRequest(BaseModel):
 
 @router.post("/heartbeat", response_model=AgentPresence, tags=["presence"])
 def post_heartbeat(
-    payload: HeartbeatRequest, session: SessionDep, settings: SettingsDep
+    payload: HeartbeatRequest,
+    session: SessionDep,
+    settings: SettingsDep,
+    request: Request,
 ) -> AgentPresence:
-    """Record an explicit liveness signal; also keeps the agent's own claim fresh."""
+    """Record an explicit liveness signal; also keeps the agent's own claim fresh.
+
+    Attributed the same way writes are: the heartbeat is what populates the agent
+    registry, so leaving it unattributed produced agents with no owner in `GET /agents`
+    — the one view whose entire job is telling you who is working.
+    """
     row = presence_service.record_heartbeat(
         session,
         agent=payload.agent,
-        human_owner=payload.human_owner,
+        human_owner=caller_owner(request, settings) or payload.human_owner,
         project=payload.project,
         task=payload.task,
         status_note=payload.status_note,
