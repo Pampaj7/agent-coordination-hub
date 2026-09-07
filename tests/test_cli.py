@@ -273,3 +273,48 @@ def test_unreachable_relay_gives_actionable_advice(monkeypatch: pytest.MonkeyPat
     assert result.exit_code == 1
     assert "Cannot reach the relay" in result.output
     assert "agent-relay serve" in result.output
+
+
+def test_an_answer_can_carry_structure(cli: TestClient) -> None:
+    """A substantive answer deserves the same structure an update gets.
+
+    `post answer` accepted only a one-line summary, so a reply that separated the
+    answer from its caveats had to flatten both into one string — and the caveat is
+    exactly the part a reader needs to see distinctly.
+    """
+    run(
+        "post",
+        "question",
+        "--project",
+        "tether",
+        "--task",
+        "GH-142",
+        "--to",
+        "niccolo-claude",
+        "--summary",
+        "coaxial or single chip?",
+    )
+    result = run(
+        "post",
+        "answer",
+        "--project",
+        "tether",
+        "--task",
+        "GH-142",
+        "--agent",
+        "niccolo-claude",
+        "--in-reply-to",
+        "Q-1",
+        "--summary",
+        "Depends on the rig",
+        "--detail",
+        "answer=single chip has no extrinsic error by construction",
+        "--detail",
+        "limit=no reprojection numbers, the abstracts omit them",
+    )
+    assert result.exit_code == 0, result.output
+
+    answer = cli.get("/events", params={"event_type": "ANSWER"}).json()[0]
+    assert answer["details"]["answer"] == ["single chip has no extrinsic error by construction"]
+    assert answer["details"]["limit"] == ["no reprojection numbers, the abstracts omit them"]
+    assert answer["in_reply_to"] == "Q-1"

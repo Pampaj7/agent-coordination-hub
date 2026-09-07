@@ -446,10 +446,19 @@ def post_answer(
     task: Annotated[str | None, typer.Option("--task", "-t")] = None,
     agent: AgentOpt = None,
     owner: OwnerOpt = None,
+    detail: Annotated[
+        list[str] | None,
+        typer.Option("--detail", "-d", help="key=value, repeatable. Structure a long answer."),
+    ] = None,
     artifact: Annotated[list[str] | None, typer.Option("--artifact")] = None,
     as_json: JsonOpt = False,
 ) -> None:
-    """Answer an open question. Always pass --in-reply-to so it closes cleanly."""
+    """Answer an open question. Always pass --in-reply-to so it closes cleanly.
+
+    A substantive answer deserves structure as much as an update does: use `--detail`
+    to separate the answer from its caveats, so a reader can see where the confidence
+    ends.
+    """
     agent_name, human_owner = _identity(agent, owner)
     _post_event(
         _event_body(
@@ -461,6 +470,7 @@ def post_answer(
             target_agent=to,
             in_reply_to=in_reply_to,
             summary_text=summary_text,
+            details=_parse_details(detail),
             artifacts=list(artifact or []),
         ),
         as_json,
