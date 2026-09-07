@@ -260,7 +260,10 @@ def test_activity_panel_survives_an_event_with_no_task() -> None:
 
 def test_stats_row_counts_and_survives_a_missing_context() -> None:
     out = text_of(tui.render_stats(CONTEXT, AGENTS))
-    assert "1 blocked" in out and "1 open questions" in out and "1 agents online" in out
+    # Singular when the count is one: "1 open questions" reads like a broken tool.
+    assert "1 blocked task" in out
+    assert "1 open question" in out and "1 open questions" not in out
+    assert "1 agent online" in out and "1 agents online" not in out
     assert "0 blocked" in text_of(tui.render_stats({}, []))
 
 
@@ -339,3 +342,28 @@ def test_agent_markup_in_a_summary_is_not_interpreted() -> None:
         tui.render_activity([{"event_type": "UPDATE", "agent": "a", "summary": "[bold]"}])
     )
     assert "[bold]" in out
+
+
+@pytest.mark.parametrize(
+    ("count", "expected"),
+    [
+        (0, ["0 active claims", "0 blocked tasks", "0 open questions", "0 agents online"]),
+        (1, ["1 active claim", "1 blocked task", "1 open question", "1 agent online"]),
+        (7, ["7 active claims", "7 blocked tasks", "7 open questions", "7 agents online"]),
+    ],
+)
+def test_stat_labels_pluralise_correctly(count: int, expected: list[str]) -> None:
+    """The noun is not always the last word.
+
+    A first attempt appended "s" to the whole phrase and produced "0 agent onlines",
+    so both forms are spelled out. Numbers a reader distrusts are worse than no numbers.
+    """
+    context = {
+        "active_claims": [{}] * count,
+        "blocked_tasks": [{}] * count,
+        "unresolved_questions": [{}] * count,
+    }
+    agents = [{"status": "online"}] * count
+    out = text_of(tui.render_stats(context, agents))
+    for phrase in expected:
+        assert phrase in out

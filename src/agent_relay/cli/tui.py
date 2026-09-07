@@ -222,15 +222,18 @@ def render_stats(context: dict[str, Any], agents: list[dict[str, Any]]) -> Panel
     questions = len(context.get("unresolved_questions") or [])
     online = sum(1 for agent in agents if str(agent.get("status")) == "online")
 
-    def stat(glyph: str, count: int, label: str, *, alarming: bool) -> Text:
+    def stat(glyph: str, count: int, singular: str, plural: str, *, alarming: bool) -> Text:
         style = "bold red" if alarming and count else "bold"
-        return Text(f"{glyph} {count} {label}", style=style)
+        # "1 open questions" reads like a bug in the tool, which undermines trust in
+        # the numbers beside it. Both forms are spelled out because the noun is not
+        # always the last word ("agent online" -> "agents online", not "agent onlines").
+        return Text(f"{glyph} {count} {singular if count == 1 else plural}", style=style)
 
     cells = [
-        stat("🔒", claims, "active claims", alarming=False),
-        stat("🚧", blocked, "blocked", alarming=True),
-        stat("❓", questions, "open questions", alarming=True),
-        stat("🟢", online, "agents online", alarming=False),
+        stat("🔒", claims, "active claim", "active claims", alarming=False),
+        stat("🚧", blocked, "blocked task", "blocked tasks", alarming=True),
+        stat("❓", questions, "open question", "open questions", alarming=True),
+        stat("🟢", online, "agent online", "agents online", alarming=False),
     ]
     # Columns re-flows on a narrow terminal instead of running off the right edge.
     return _panel(
