@@ -305,10 +305,64 @@ _req POST /claim "{\"agent\":\"${AGENT_B}\",\"project\":\"${PROJECT}\",\"task\":
 _expect 200 "POST /claim succeeds again after release" || true
 _req POST /release "{\"agent\":\"${AGENT_B}\",\"project\":\"${PROJECT}\",\"task\":\"${TASK}\"}"
 
+# ===========================================================================
+# V2 surface. Everything below is opt-in in production, but the endpoints must
+# answer sensibly even when the integration behind them is switched off.
+# ===========================================================================
+
+# --- 11. presence ----------------------------------------------------------
+_req POST /heartbeat "{\"agent\":\"${AGENT_A}\",\"project\":\"${PROJECT}\",\"task\":\"${TASK}\",\"status_note\":\"smoke test\"}"
+_expect 200 "POST /heartbeat" || true
+_assert "$(printf '%s' "${BODY}" | _json status)" "online" "  agent reads as online right after a heartbeat"
+
+_req GET "/agents?project=${PROJECT_Q}"
+_expect 200 "GET /agents" || true
+
+# --- 12. claim hygiene -----------------------------------------------------
+_req GET "/claims/stale?project=${PROJECT_Q}"
+_expect 200 "GET /claims/stale" || true
+
+_req POST /claims/sweep "{}"
+_expect 200 "POST /claims/sweep" || true
+
+# --- 13. coordination brief (rule-based without an API key) ----------------
+_req GET "/coordination/brief?project=${PROJECT_Q}"
+_expect 200 "GET /coordination/brief" || true
+_assert "$(printf '%s' "${BODY}" | _json source)" "deterministic" "  brief degrades to the rule-based path with no API key"
+
+# --- 14. cross-project overview -------------------------------------------
+_req GET "/coordination/overview"
+_expect 200 "GET /coordination/overview" || true
+
+# --- 15. experiments -------------------------------------------------------
+_req GET "/experiments?project=${PROJECT_Q}"
+_expect 200 "GET /experiments" || true
+
+# --- 16. dashboard ---------------------------------------------------------
+_req GET "/dashboard"
+_expect 200 "GET /dashboard" || true
+
+# --- 17. A2A ---------------------------------------------------------------
+_req GET "/.well-known/agent.json"
+_expect 200 "GET /.well-known/agent.json" || true
+_assert "$(printf '%s' "${BODY}" | _json name)" "agent-relay" "  agent card identifies the relay"
+
+_req POST /a2a '{"jsonrpc":"2.0","id":1,"method":"tasks/cancel","params":{}}'
+_expect 200 "POST /a2a unsupported method" || true
+_assert "$(printf '%s' "${BODY}" | _json error.code)" "-32601" "  JSON-RPC reports method-not-found, not HTTP 500"
+
+# --- 18. webhooks are closed unless configured -----------------------------
+# Both are unconfigured in a default relay, and must refuse rather than accept.
+_req POST /webhooks/github '{}'
+_expect 503 "POST /webhooks/github refuses when no secret is set" || true
+
+_req POST /webhooks/slack/events '{}'
+_expect 503 "POST /webhooks/slack/events refuses when the bot is off" || true
+
 # --- summary ---------------------------------------------------------------
 printf '\n'
 if [ "${FAILURES}" -eq 0 ]; then
-    printf '%s%s checks, 0 failures — MVP looks healthy.%s\n' "${C_GREEN}" "${STEPS}" "${C_OFF}"
+    printf '%s%s checks, 0 failures — the relay looks healthy.%s\n' "${C_GREEN}" "${STEPS}" "${C_OFF}"
     exit 0
 fi
 printf '%s%s checks, %s failure(s).%s\n' "${C_RED}" "${STEPS}" "${FAILURES}" "${C_OFF}"

@@ -161,9 +161,11 @@ Convenience wrapper for everything below (`setup`, `serve`, `test`, `lint`, `fmt
 ./scripts/smoke_test.sh --start
 ```
 
-Starts a throwaway relay on a temporary database, exercises the full workflow
-including a real claim collision, prints a PASS/FAIL line per check, and cleans up
-after itself.
+Starts a throwaway relay on a temporary database and runs 35 checks over the whole
+surface — a real claim collision, a handoff, presence, the stale sweep, the briefing
+falling back to its rule-based path with no API key, the A2A card, and proof that the
+webhook endpoints refuse traffic while unconfigured. One PASS/FAIL line per check, and
+it cleans up after itself.
 
 ## The CLI
 
@@ -684,13 +686,15 @@ agent-coordination-hub/
 │   ├── ARCHITECTURE.md      # design, data model, rules, what is deliberately absent
 │   ├── AGENT_PROTOCOL.md    # how an agent must behave + integration snippets
 │   ├── SLACK_SETUP.md
+│   ├── INTEGRATIONS.md      # GitHub, Slack, MCP, A2A, trackers
+│   ├── OPERATIONS.md        # deploying, upgrading, backups, runbook
 │   └── EXAMPLES.md          # full worked walkthrough
 └── scripts/                 # dev.sh, smoke_test.sh
 ```
 
-Logic lives in `services/`, not in routes. That is what makes a future coordinator
-cheap: it can import these functions directly or call the HTTP API and get identical
-answers.
+Logic lives in `services/`, not in routes. That is what made the V2 coordinator cheap
+to add: it imports those functions directly and gets exactly what the HTTP API would
+have returned.
 
 ### Data model
 
