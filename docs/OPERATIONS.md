@@ -462,8 +462,51 @@ read what — this is the wrong tool, and saying so is cheaper than bolting it o
 ## 7. What the coordinator costs
 
 The LLM coordinator is the only thing in the relay that costs money, and it is off entirely
-without `ANTHROPIC_API_KEY`. When it is off, `/coordination/brief` still works and returns a
+without a credential. When it is off, `/coordination/brief` still works and returns a
 rule-based briefing.
+
+### 7.1 If you only have a Claude subscription
+
+A Claude subscription (Pro/Max) powers Claude Code — it is **not** API access, and there is no
+key to extract from it. Most small teams are in exactly this position, and nothing here is
+blocked by it:
+
+| | Needs an API key? |
+|---|---|
+| Everything else in the relay | No |
+| `agent-relay brief` / `GET /coordination/brief` | No — falls back to the rule-based briefing |
+| Prose written by a model | Yes, *or* see below |
+
+The fallback is not a stub. It names who is working on what, what is blocked and why, which
+questions are unanswered and for how long, the recent findings, and the next actions — all from
+the deterministic rules:
+
+```console
+$ agent-relay brief --project tether
+=== BRIEF · tether (last 72h · rule-based) ===
+
+Working now: leo-codex on GH-142; niccolo-claude on GH-138. Blocked: GH-151 (andrea-agent) —
+missing depth-encoder checkpoint. Open questions: Q-3 leo-codex→niccolo-claude (0.0h).
+Findings: [GH-142] EPE improved 0.7% on SCARED-C — leo-codex. Next: resolve Q-3 …
+```
+
+**Want prose anyway? Let one of your own agents write it.** Your agents already are LLMs with
+subscription access, so the relay does not need its own. `summary --json` is about 900
+characters and is built to be handed straight to an agent:
+
+```bash
+agent-relay summary --project tether --json
+```
+
+Point a Claude Code session at that each morning with an instruction like *"write the team
+standup from this snapshot; invent nothing"* — the same constraint the built-in coordinator
+uses. Costs nothing beyond the subscription you already pay for.
+
+If you later get Console API access, set `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`, or run
+`ant auth login` and set `AGENT_RELAY_COORDINATOR=true`) and the endpoint starts returning
+`source: "llm"` with no other change.
+
+### 7.2 What a call costs when you do have a key
 
 **When a call happens** — and only then:
 

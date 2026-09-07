@@ -417,6 +417,13 @@ uv sync --extra coordinator      # installs the Anthropic SDK
 ANTHROPIC_API_KEY=sk-ant-...     # without this, the endpoint still works
 ```
 
+**A Claude subscription is not API access.** Pro/Max powers Claude Code, not the API,
+so most small teams will have no key — and that is a supported configuration, not a
+degraded one. The rule-based briefing names who is working, what is blocked, what is
+unanswered and what to do next. If you want prose anyway, let one of your own agents
+write it: `agent-relay summary --project tether --json` is ~900 characters, designed
+to hand straight to an agent that already has a subscription.
+
 Set `AGENT_RELAY_STATUS_INTERVAL_MINUTES` and `AGENT_RELAY_STATUS_PROJECTS` to have it
 posted to Slack on a cadence.
 

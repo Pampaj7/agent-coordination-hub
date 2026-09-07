@@ -16,6 +16,7 @@ SECRET_FIELDS = frozenset(
         "github_token",
         "github_webhook_secret",
         "anthropic_api_key",
+        "anthropic_auth_token",
     }
 )
 
@@ -81,6 +82,13 @@ class Settings(BaseSettings):
 
     # --- coordinator LLM (V2) ---
     anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
+    #: The SDK also accepts a bearer token, and resolves an `ant auth login` profile
+    #: from disk when neither is set. Recognising those means a team with Console
+    #: access but no long-lived key is not shut out.
+    anthropic_auth_token: str | None = Field(default=None, alias="ANTHROPIC_AUTH_TOKEN")
+    #: Force the coordinator on when the credential lives somewhere this process
+    #: cannot see from the environment (an OAuth profile on disk, for instance).
+    coordinator_force: bool = Field(default=False, alias="AGENT_RELAY_COORDINATOR")
     coordinator_model: str = Field(default="claude-opus-5", alias="COORDINATOR_MODEL")
     coordinator_max_tokens: int = Field(default=16000, alias="COORDINATOR_MAX_TOKENS")
     #: low | medium | high | xhigh | max. A status brief is a small job; "low" keeps
@@ -175,7 +183,13 @@ class Settings(BaseSettings):
 
     @property
     def coordinator_enabled(self) -> bool:
-        return bool(self.anthropic_api_key)
+        """Whether to attempt an LLM briefing at all.
+
+        A Claude *subscription* is not API access, so most teams will have none of
+        these and get the deterministic briefing — which is the designed outcome, not
+        a degraded one.
+        """
+        return bool(self.anthropic_api_key or self.anthropic_auth_token or self.coordinator_force)
 
     @property
     def status_project_list(self) -> list[str]:

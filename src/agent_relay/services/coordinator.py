@@ -202,7 +202,9 @@ async def write_brief(summary: CoordinationSummary, settings: Settings) -> tuple
         logger.warning("coordinator enabled but the anthropic SDK is not installed")
         return deterministic_brief(summary), "deterministic"
 
-    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    # Passing api_key=None leaves the SDK's own resolution intact: ANTHROPIC_API_KEY,
+    # then ANTHROPIC_AUTH_TOKEN, then an `ant auth login` profile on disk.
+    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key or None)
     messages: list[MessageParam] = [
         {
             "role": "user",

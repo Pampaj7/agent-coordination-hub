@@ -247,3 +247,38 @@ def test_brief_endpoint_reports_the_llm_source(
     assert body["source"] == "llm"
     assert body["model"] == "claude-opus-5"
     assert body["summary"]["project"] == "tether"
+
+
+@pytest.mark.parametrize(
+    ("env", "expected"),
+    [
+        ({}, False),
+        ({"ANTHROPIC_API_KEY": "sk-ant-test"}, True),
+        ({"ANTHROPIC_AUTH_TOKEN": "oauth-token"}, True),
+        ({"AGENT_RELAY_COORDINATOR": "true"}, True),
+    ],
+)
+def test_any_credential_source_enables_the_coordinator(env: dict[str, str], expected: bool) -> None:
+    """The gate used to check only ANTHROPIC_API_KEY.
+
+    The SDK resolves a bearer token and an `ant auth login` profile too, so a team with
+    Console access but no long-lived key was shut out of a feature they could use.
+    """
+    assert Settings(AGENT_RELAY_DB_URL="sqlite://", **env).coordinator_enabled is expected
+
+
+def test_no_credential_is_a_supported_configuration_not_a_failure(client: TestClient) -> None:
+    """A Claude subscription is not API access, so this is the common case.
+
+    The briefing must still be worth reading: it names who is working, what is blocked,
+    what is unanswered and what to do next — from the deterministic rules alone.
+    """
+    seed(client)
+    body = client.get("/coordination/brief", params={"project": "tether"}).json()
+
+    assert body["source"] == "deterministic"
+    assert body["model"] is None
+    brief = body["brief"]
+    assert "leo-codex" in brief and "GH-142" in brief
+    assert "GH-151" in brief and "missing checkpoint" in brief
+    assert "Q-4" in brief or "niccolo-claude" in brief
