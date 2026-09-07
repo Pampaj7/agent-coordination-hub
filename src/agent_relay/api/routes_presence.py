@@ -14,7 +14,7 @@ from agent_relay.services.presence import AgentPresence, StaleClaim, SweepReport
 router = APIRouter(dependencies=[AuthDep])
 
 #: Accepted values of the ?status= filter on GET /agents.
-STATUS_PATTERN = "^(online|idle|offline|unknown)$"
+STATUS_PATTERN = "^(working|online|idle|offline|unknown)$"
 
 
 class HeartbeatRequest(BaseModel):

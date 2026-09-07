@@ -23,11 +23,11 @@ import logging
 from collections import defaultdict
 
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from agent_relay.config import Settings
-from agent_relay.db.models import Agent, utcnow
+from agent_relay.db.models import Agent, Event, utcnow
 from agent_relay.models.schemas import ReleaseRequest
 from agent_relay.services.claims import (
     last_update_for,
@@ -39,20 +39,38 @@ from agent_relay.services.events import touch_registry
 
 logger = logging.getLogger(__name__)
 
+#: Liveness, derived from the heartbeat alone.
 ONLINE = "online"
 IDLE = "idle"
 OFFLINE = "offline"
 UNKNOWN = "unknown"
 
+#: Activity, derived from liveness *plus* evidence of actual work. A heartbeat only
+#: proves the process is alive; ``working`` additionally requires that the agent is
+#: holding a task or has just produced something. The distinction matters because
+#: "online" on its own is what an idling shell looks like.
+WORKING = "working"
+
 #: Sort order for the presence list: who to look at first.
-_STATUS_RANK = {ONLINE: 0, IDLE: 1, OFFLINE: 2, UNKNOWN: 3}
+_STATUS_RANK = {WORKING: 0, ONLINE: 1, IDLE: 2, OFFLINE: 3, UNKNOWN: 4}
 
 
 class AgentPresence(BaseModel):
     """One agent's liveness, plus what it currently owns."""
 
     agent: str
-    status: str = Field(description="online | idle | offline | unknown")
+    status: str = Field(description="working | online | idle | offline | unknown. What to display.")
+    liveness: str = Field(
+        default=UNKNOWN,
+        description=(
+            "online | idle | offline | unknown, from the heartbeat alone. "
+            "``status`` is this, upgraded to ``working`` when there is work evidence."
+        ),
+    )
+    busy_reason: str | None = Field(
+        default=None,
+        description="Why the agent counts as working. None unless status is 'working'.",
+    )
     human_owner: str | None = None
     project: str | None = Field(default=None, description="Last project this agent worked in.")
     current_task: str | None = None
@@ -179,13 +197,84 @@ def presence_status(agent_row: Agent, settings: Settings, now: dt.datetime | Non
     return OFFLINE
 
 
+def work_status(
+    liveness: str,
+    *,
+    held_tasks: list[str],
+    last_event_at: dt.datetime | None,
+    settings: Settings,
+    now: dt.datetime,
+) -> tuple[str, str | None]:
+    """Upgrade ``online`` to ``working`` when the agent shows evidence of work.
+
+    A heartbeat proves a process is alive, nothing more: a shell sitting at a prompt
+    heartbeats exactly like one that is mid-task. Two things distinguish them, and
+    either is enough:
+
+    * the agent holds an active claim — it has told everyone it owns a task; or
+    * it posted an event within the online window — it has just produced something.
+
+    Only ``online`` is ever upgraded. An idle or offline agent that still holds a
+    claim is precisely the case ``stale_claims`` exists to flag, and calling it
+    "working" would hide it.
+    """
+    if liveness != ONLINE:
+        return liveness, None
+    if held_tasks:
+        return WORKING, "holds " + ", ".join(sorted(held_tasks))
+    if last_event_at is not None:
+        age = (now - last_event_at).total_seconds()
+        if 0 <= age <= settings.heartbeat_online_seconds:
+            return WORKING, f"posted {int(age)}s ago"
+    return liveness, None
+
+
+def last_event_at_by_agent(
+    session: Session, agents: list[str] | None = None
+) -> dict[str, dt.datetime]:
+    """When each agent last posted something of its own.
+
+    Restricted to ``source == "agent"``: an event ingested from GitHub or Slack is
+    activity *about* the agent, not activity *by* it, and must not make an absent
+    agent look busy.
+    """
+    stmt = (
+        select(Event.agent, func.max(Event.created_at))
+        .where(Event.source == "agent")
+        .group_by(Event.agent)
+    )
+    if agents is not None:
+        if not agents:
+            return {}
+        stmt = stmt.where(Event.agent.in_(agents))
+    return {name: ts for name, ts in session.execute(stmt) if ts is not None}
+
+
 def _to_presence(
-    row: Agent, settings: Settings, tasks: list[str], now: dt.datetime
+    row: Agent,
+    settings: Settings,
+    tasks: list[str],
+    now: dt.datetime,
+    *,
+    held_tasks: list[str] | None = None,
+    last_event_at: dt.datetime | None = None,
 ) -> AgentPresence:
     since = (now - row.last_heartbeat_at).total_seconds() if row.last_heartbeat_at else None
+    liveness = presence_status(row, settings, now)
+    status, busy_reason = work_status(
+        liveness,
+        # Work evidence is deliberately unscoped by project: an agent holding a task
+        # in another project is working, even when this view is filtered to one.
+        held_tasks=tasks if held_tasks is None else held_tasks,
+        last_event_at=last_event_at,
+        settings=settings,
+        now=now,
+    )
     return AgentPresence(
         agent=row.name,
-        status=presence_status(row, settings, now),
+        status=status,
+        liveness=liveness,
+        busy_reason=busy_reason,
         human_owner=row.human_owner,
         project=row.last_project,
         current_task=row.current_task,
@@ -206,7 +295,15 @@ def agent_presence(
     """Presence for a single agent — what ``POST /heartbeat`` hands straight back."""
     now = now or utcnow()
     claims = list_active_claims(session, agent=agent_row.name)
-    return _to_presence(agent_row, settings, [c.task for c in claims], now)
+    tasks = [c.task for c in claims]
+    return _to_presence(
+        agent_row,
+        settings,
+        tasks,
+        now,
+        held_tasks=tasks,
+        last_event_at=last_event_at_by_agent(session, [agent_row.name]).get(agent_row.name),
+    )
 
 
 def list_presence(
@@ -226,16 +323,33 @@ def list_presence(
     now = now or utcnow()
     rows = list(session.execute(select(Agent).order_by(Agent.name.asc())).scalars())
 
+    # Claims are fetched unscoped and filtered here rather than in SQL: the project
+    # filter must narrow what is *displayed* without narrowing the evidence used to
+    # decide whether an agent is working.
     tasks_by_agent: dict[str, list[str]] = defaultdict(list)
-    for claim in list_active_claims(session, project=project):
-        tasks_by_agent[claim.agent].append(claim.task)
+    held_by_agent: dict[str, list[str]] = defaultdict(list)
+    for claim in list_active_claims(session):
+        held_by_agent[claim.agent].append(claim.task)
+        if project is None or claim.project == project:
+            tasks_by_agent[claim.agent].append(claim.task)
+
+    last_events = last_event_at_by_agent(session, [row.name for row in rows])
 
     presences: list[AgentPresence] = []
     for row in rows:
         if project and row.last_project != project and row.name not in tasks_by_agent:
             continue
-        presence = _to_presence(row, settings, tasks_by_agent.get(row.name, []), now)
-        if status and presence.status != status.lower():
+        presence = _to_presence(
+            row,
+            settings,
+            tasks_by_agent.get(row.name, []),
+            now,
+            held_tasks=held_by_agent.get(row.name, []),
+            last_event_at=last_events.get(row.name),
+        )
+        # Match either name: `--status online` keeps returning working agents, which
+        # are online by definition, while `--status working` narrows to just those.
+        if status and status.lower() not in {presence.status, presence.liveness}:
             continue
         presences.append(presence)
 

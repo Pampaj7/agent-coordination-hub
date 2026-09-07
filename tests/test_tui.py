@@ -263,7 +263,7 @@ def test_stats_row_counts_and_survives_a_missing_context() -> None:
     # Singular when the count is one: "1 open questions" reads like a broken tool.
     assert "1 blocked task" in out
     assert "1 open question" in out and "1 open questions" not in out
-    assert "1 agent online" in out and "1 agents online" not in out
+    assert "1 agent standing by" in out and "1 agents standing by" not in out
     assert "0 blocked" in text_of(tui.render_stats({}, []))
 
 
@@ -347,9 +347,9 @@ def test_agent_markup_in_a_summary_is_not_interpreted() -> None:
 @pytest.mark.parametrize(
     ("count", "expected"),
     [
-        (0, ["0 active claims", "0 blocked tasks", "0 open questions", "0 agents online"]),
-        (1, ["1 active claim", "1 blocked task", "1 open question", "1 agent online"]),
-        (7, ["7 active claims", "7 blocked tasks", "7 open questions", "7 agents online"]),
+        (0, ["0 active claims", "0 blocked tasks", "0 open questions", "0 agents standing by"]),
+        (1, ["1 active claim", "1 blocked task", "1 open question", "1 agent standing by"]),
+        (7, ["7 active claims", "7 blocked tasks", "7 open questions", "7 agents standing by"]),
     ],
 )
 def test_stat_labels_pluralise_correctly(count: int, expected: list[str]) -> None:
@@ -431,3 +431,41 @@ def test_wide_terminals_get_two_columns_and_narrow_ones_do_not() -> None:
     # Both layouts must still contain every panel.
     for heading in ("BLOCKED", "OPEN QUESTIONS", "FINDINGS", "WHO IS WORKING", "RECENT ACTIVITY"):
         assert heading in "\n".join(wide) and heading in "\n".join(narrow)
+
+
+def test_working_and_standing_by_are_counted_separately() -> None:
+    """The two numbers must partition the live agents, not overlap.
+
+    If a working agent were also counted as online, the header would claim more
+    agents than exist, and the first thing a reader checks is whether the numbers
+    add up.
+    """
+    agents = [
+        {"status": "working"},
+        {"status": "working"},
+        {"status": "online"},
+        {"status": "offline"},
+    ]
+    out = text_of(tui.render_stats({}, agents))
+    assert "2 agents working" in out
+    assert "1 agent standing by" in out
+
+
+def test_agents_panel_shows_why_an_agent_counts_as_working() -> None:
+    """An asserted state nobody can check is a state nobody trusts."""
+    out = text_of(
+        tui.render_agents(
+            [
+                {
+                    "agent": "leo-codex",
+                    "status": "working",
+                    "busy_reason": "holds GH-142",
+                    "status_note": "running the sweep",
+                    "active_claims": ["GH-142"],
+                }
+            ]
+        )
+    )
+    assert "working" in out
+    assert "holds GH-142" in out
+    assert "running the sweep" in out

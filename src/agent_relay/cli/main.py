@@ -576,7 +576,15 @@ def heartbeat(
 @app.command()
 def agents(
     project: Annotated[str | None, typer.Option("--project", "-p")] = None,
-    status: Annotated[str | None, typer.Option(help="online | idle | offline | unknown")] = None,
+    status: Annotated[
+        str | None,
+        typer.Option(
+            help=(
+                "working | online | idle | offline | unknown. "
+                "'online' also matches working agents; 'working' narrows to them."
+            )
+        ),
+    ] = None,
     as_json: JsonOpt = False,
 ) -> None:
     """Who is alive right now, and what are they holding."""
@@ -664,6 +672,30 @@ def inbox(
         _fail(exc)
         return
     _emit(payload, render.render_inbox(payload), as_json)
+
+
+@app.command()
+def wait(
+    agent: AgentOpt = None,
+    project: Annotated[str | None, typer.Option("--project", "-p")] = None,
+    interval: Annotated[float, typer.Option(help="Seconds between checks.")] = 15.0,
+    once: Annotated[bool, typer.Option("--once", help="Exit after the first arrival.")] = False,
+    exec_cmd: Annotated[
+        str | None,
+        typer.Option("--exec", help="Shell command to run when something arrives."),
+    ] = None,
+) -> None:
+    """Wait for something to land in your inbox, then optionally run a command.
+
+    Agents cannot be woken — they are turn-based and have no listener. A shell can be,
+    so this wakes one, and the command it runs may be the one that starts your agent:
+
+        agent-relay wait --exec 'claude -p "check your agent-relay inbox and act on it"'
+    """
+    from agent_relay.cli import waiter
+
+    agent_name, _owner = _identity(agent, None)
+    waiter.run(agent_name, project=project, interval=interval, once=once, command=exec_cmd)
 
 
 def main() -> None:

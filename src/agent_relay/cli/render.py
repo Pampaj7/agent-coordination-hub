@@ -280,13 +280,21 @@ def render_health(health: dict[str, Any]) -> str:
     )
 
 
-PRESENCE_GLYPHS = {"online": "🟢", "idle": "🟡", "offline": "🔴", "unknown": "⚪"}
+# "working" gets its own glyph rather than a shade of green: the whole point of the
+# state is that it is not the same thing as being online.
+PRESENCE_GLYPHS = {
+    "working": "⚡",
+    "online": "🟢",
+    "idle": "🟡",
+    "offline": "🔴",
+    "unknown": "⚪",
+}
 
 
 def render_agents(agents: list[dict[str, Any]]) -> str:
     if not agents:
         return "(no agents have been seen yet)"
-    header = f"{'AGENT':<20} {'STATUS':<10} {'OWNER':<12} {'SEEN':>6}  TASKS"
+    header = f"{'AGENT':<20} {'STATUS':<11} {'OWNER':<12} {'SEEN':>6}  TASKS"
     rows = [header, "-" * len(header)]
     for agent in agents:
         status = str(agent.get("status", "unknown"))
@@ -296,9 +304,14 @@ def render_agents(agents: list[dict[str, Any]]) -> str:
         name = str(agent.get("agent", ""))
         owner = str(agent.get("human_owner") or "-")
         tasks = ", ".join(agent.get("active_claims") or []) or "-"
-        rows.append(f"{name:<20} {glyph + ' ' + status:<10} {owner:<12} {seen:>6}  {tasks}")
-        if note := agent.get("status_note"):
-            rows.append(f"{'':<20} {note}")
+        rows.append(f"{name:<20} {glyph + ' ' + status:<11} {owner:<12} {seen:>6}  {tasks}")
+        # The reason is what makes "working" checkable rather than something the
+        # dashboard just asserts.
+        detail = " · ".join(
+            str(x) for x in (agent.get("busy_reason"), agent.get("status_note")) if x
+        )
+        if detail:
+            rows.append(f"{'':<20} {detail}")
     return "\n".join(rows)
 
 

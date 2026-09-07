@@ -223,6 +223,9 @@ def render_stats(context: dict[str, Any], agents: list[dict[str, Any]]) -> Panel
     claims = len(context.get("active_claims") or [])
     blocked = len(context.get("blocked_tasks") or [])
     questions = len(context.get("unresolved_questions") or [])
+    working = sum(1 for agent in agents if str(agent.get("status")) == "working")
+    # Online here means "alive but not on anything" — working agents are counted
+    # separately, so the two numbers add up instead of overlapping.
     online = sum(1 for agent in agents if str(agent.get("status")) == "online")
 
     def stat(glyph: str, count: int, singular: str, plural: str, *, alarming: bool) -> Text:
@@ -236,7 +239,8 @@ def render_stats(context: dict[str, Any], agents: list[dict[str, Any]]) -> Panel
         stat("🔒", claims, "active claim", "active claims", alarming=False),
         stat("🚧", blocked, "blocked task", "blocked tasks", alarming=True),
         stat("❓", questions, "open question", "open questions", alarming=True),
-        stat("🟢", online, "agent online", "agents online", alarming=False),
+        stat("⚡", working, "agent working", "agents working", alarming=False),
+        stat("🟢", online, "agent standing by", "agents standing by", alarming=False),
     ]
     # Joined with separators rather than spread edge-to-edge: on a wide terminal
     # `Columns(expand=True)` pushes the four numbers into the corners, so reading them
@@ -300,6 +304,16 @@ def render_questions(context: dict[str, Any]) -> Panel:
     return _panel(title, table, style="yellow")
 
 
+#: Only ``working`` is emphasised. Online-but-idle is deliberately not green: it
+#: looks like activity at a glance, and it is not.
+_PRESENCE_STYLES = {
+    "working": "bold green",
+    "online": "cyan",
+    "idle": "yellow",
+    "offline": "red",
+}
+
+
 def render_agents(agents: list[dict[str, Any]]) -> Panel:
     """Who is actually alive, and what they are holding while alive."""
     if not agents:
@@ -309,7 +323,7 @@ def render_agents(agents: list[dict[str, Any]]) -> Panel:
             style="cyan",
         )
 
-    table = _grid(("AGENT", 16), ("STATUS", 11), ("OWNER", 10), ("TASKS", 14), ("NOTE", None))
+    table = _grid(("AGENT", 16), ("STATUS", 12), ("OWNER", 10), ("TASKS", 14), ("NOTE", None))
     for agent in agents:
         status = str(agent.get("status") or "unknown")
         # Emoji *and* the word: colour alone is unreadable for a chunk of people and
@@ -317,10 +331,17 @@ def render_agents(agents: list[dict[str, Any]]) -> Panel:
         glyph = PRESENCE_GLYPHS.get(status, "⚪")
         table.add_row(
             _cell(agent.get("agent"), 24, style="bold"),
-            Text(f"{glyph} {status}", style="green" if status == "online" else "dim"),
+            Text(f"{glyph} {status}", style=_PRESENCE_STYLES.get(status, "dim")),
             _cell(agent.get("human_owner"), 18),
             _cell(", ".join(agent.get("active_claims") or []), 28),
-            _cell(agent.get("status_note"), SUMMARY_WIDTH, style="dim", empty=""),
+            _cell(
+                " · ".join(
+                    str(x) for x in (agent.get("busy_reason"), agent.get("status_note")) if x
+                ),
+                SUMMARY_WIDTH,
+                style="dim",
+                empty="",
+            ),
         )
     return _panel("👥 WHO IS WORKING", table, style="cyan")
 

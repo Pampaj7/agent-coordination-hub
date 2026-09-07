@@ -227,7 +227,10 @@ def test_agents_lists_claims_and_orders_the_live_ones_first(relay: TestClient, d
 
     rows = agents(relay)
     assert [r["agent"] for r in rows] == ["leo-codex", "niccolo-claude"]
-    assert rows[0]["status"] == "online"
+    # Holding two claims, so the display status is "working"; the heartbeat-only
+    # answer this test is about lives in `liveness`.
+    assert rows[0]["status"] == "working"
+    assert rows[0]["liveness"] == "online"
     assert rows[0]["active_claims"] == ["GH-142", "GH-150"]
     assert rows[1]["status"] == "offline"
     assert rows[1]["active_claims"] == ["GH-138"]
@@ -502,7 +505,7 @@ def test_an_online_agent_never_loses_its_claim(expiring: tuple[TestClient, Sessi
     # ...but the agent is unmistakably alive.
     client.post("/heartbeat", json={"agent": "leo-codex"})
 
-    assert client.get("/agents").json()[0]["status"] == "online"
+    assert client.get("/agents").json()[0]["liveness"] == "online"
 
     report = client.post("/claims/sweep", json={}).json()
     assert report["released"] == [], "an online agent must keep its claim"
@@ -547,3 +550,130 @@ def test_an_expiry_shorter_than_the_stale_threshold_still_fires(
 
     reset_engine()
     get_settings.cache_clear()
+
+
+# ------------------------------------------------------- working vs merely online
+#
+# The contract: a heartbeat proves a process is alive, not that it is doing anything.
+# ``working`` is the state that requires evidence, and every test below tries to
+# create the state without the evidence.
+
+
+def backdate_events(db: Session, agent: str, hours: float) -> None:
+    db.execute(
+        text("UPDATE events SET created_at = :when WHERE agent = :agent"),
+        {"when": ago(hours), "agent": agent},
+    )
+    db.commit()
+
+
+def presence_of(client: TestClient, agent: str) -> dict[str, Any]:
+    rows = [row for row in agents(client) if row["agent"] == agent]
+    assert rows, f"{agent} not found"
+    return dict(rows[0])
+
+
+def test_fresh_heartbeat_alone_is_online_not_working(relay: TestClient) -> None:
+    """The idling-shell case. Alive, holding nothing, having produced nothing."""
+    heartbeat(relay, agent="quiet-agent")
+
+    row = presence_of(relay, "quiet-agent")
+    assert row["status"] == "online"
+    assert row["liveness"] == "online"
+    assert row["busy_reason"] is None
+
+
+def test_holding_a_claim_while_online_is_working(relay: TestClient) -> None:
+    heartbeat(relay, agent="leo-codex")
+    claim(relay, agent="leo-codex", task="GH-142")
+
+    row = presence_of(relay, "leo-codex")
+    assert row["status"] == "working"
+    # Liveness is untouched: the two answers stay independently readable.
+    assert row["liveness"] == "online"
+    assert row["busy_reason"] == "holds GH-142"
+
+
+def test_recent_event_without_a_claim_is_working(relay: TestClient) -> None:
+    """Plenty of real work is done without claiming anything."""
+    heartbeat(relay, agent="chatty-agent")
+    post_event(relay, agent="chatty-agent", event_type="UPDATE")
+
+    row = presence_of(relay, "chatty-agent")
+    assert row["status"] == "working"
+    assert row["busy_reason"] is not None
+    assert row["busy_reason"].startswith("posted ")
+
+
+def test_old_event_without_a_claim_is_not_working(relay: TestClient, db: Session) -> None:
+    """Something posted two hours ago is history, not evidence of current work."""
+    heartbeat(relay, agent="chatty-agent")
+    post_event(relay, agent="chatty-agent", event_type="UPDATE")
+    backdate_events(db, "chatty-agent", hours=2)
+
+    assert presence_of(relay, "chatty-agent")["status"] == "online"
+
+
+def test_idle_agent_holding_a_claim_is_not_working(relay: TestClient, db: Session) -> None:
+    """The dangerous inversion.
+
+    An agent that stopped heartbeating but still holds a task is exactly what
+    ``stale_claims`` exists to surface. Labelling it "working" because of the claim
+    would hide the abandoned task behind the most reassuring word on the dashboard.
+    """
+    heartbeat(relay, agent="leo-codex")
+    claim(relay, agent="leo-codex", task="GH-142")
+    backdate_heartbeat(db, "leo-codex", hours=0.25)  # past the 300s online window
+
+    row = presence_of(relay, "leo-codex")
+    assert row["status"] == "idle"
+    assert row["busy_reason"] is None
+
+
+def test_ingested_activity_does_not_make_an_agent_look_busy(relay: TestClient, db: Session) -> None:
+    """A GitHub webhook is activity *about* an agent, not activity *by* it."""
+    heartbeat(relay, agent="quiet-agent")
+    post_event(relay, agent="quiet-agent", event_type="UPDATE")
+    db.execute(text("UPDATE events SET source = 'github' WHERE agent = 'quiet-agent'"))
+    db.commit()
+
+    assert presence_of(relay, "quiet-agent")["status"] == "online"
+
+
+def test_status_filter_online_still_includes_working_agents(relay: TestClient) -> None:
+    """`--status online` must not silently drop the busiest agents."""
+    heartbeat(relay, agent="leo-codex")
+    claim(relay, agent="leo-codex", task="GH-142")
+    heartbeat(relay, agent="quiet-agent")
+
+    online = {row["agent"] for row in agents(relay, status="online")}
+    assert online == {"leo-codex", "quiet-agent"}
+
+    working = {row["agent"] for row in agents(relay, status="working")}
+    assert working == {"leo-codex"}
+
+
+def test_working_agents_sort_above_merely_online_ones(relay: TestClient) -> None:
+    heartbeat(relay, agent="zzz-quiet")
+    heartbeat(relay, agent="aaa-busy")
+    claim(relay, agent="aaa-busy", task="GH-142")
+
+    order = [row["agent"] for row in agents(relay)]
+    assert order.index("aaa-busy") < order.index("zzz-quiet")
+
+
+def test_project_filter_does_not_hide_that_an_agent_is_working(relay: TestClient) -> None:
+    """Filtering the view must narrow what is shown, not what is known.
+
+    An agent busy in another project is still working; showing it as "online" in a
+    project-scoped view would invite someone to hand it a second task.
+    """
+    heartbeat(relay, agent="leo-codex", project="tether")
+    claim(relay, agent="leo-codex", task="GH-142")  # claimed in project "tether"
+    heartbeat(relay, agent="leo-codex", project="other-project")
+
+    rows = agents(relay, project="other-project")
+    row = next(r for r in rows if r["agent"] == "leo-codex")
+    assert row["status"] == "working"
+    # The claim itself is correctly filtered out of this project's view.
+    assert row["active_claims"] == []
