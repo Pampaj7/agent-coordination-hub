@@ -99,10 +99,15 @@ def build_task_states(
         if event.branch:
             state.branch = event.branch
         event_type = EventType(event.event_type)
+        # Only an agent's own activity counts as work. Ingested GitHub and Slack
+        # traffic lands here as UPDATE/DECISION too, and letting it through would
+        # mean an unrelated issue comment clears a real blocker, and every push by
+        # the claim holder looks like a second agent duplicating their work.
+        from_agent = (event.source or "agent") == "agent"
         if window_start is None or event.created_at >= window_start:
             state.events_in_window += 1
             state.agents_in_window.add(event.agent)
-            if event_type in WORK_EVENTS:
+            if from_agent and event_type in WORK_EVENTS:
                 state.work_in_window.append((event.agent, event.created_at))
 
         if event_type is EventType.BLOCKED:
@@ -110,7 +115,7 @@ def build_task_states(
             state.blocked_reason = event.summary
             state.blocked_agent = event.agent
             state.blocked_at = event.created_at
-        elif event_type in UNBLOCKING_EVENTS:
+        elif from_agent and event_type in UNBLOCKING_EVENTS:
             state.unblocked_event_id = event.id
     return states
 

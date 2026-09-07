@@ -255,10 +255,16 @@ def stale_claims(
     *,
     project: str | None = None,
     now: dt.datetime | None = None,
+    min_idle_hours: float | None = None,
 ) -> list[StaleClaim]:
-    """Active claims idle for longer than ``claim_stale_hours``, worst first."""
+    """Active claims idle for longer than ``claim_stale_hours``, worst first.
+
+    ``min_idle_hours`` overrides that threshold; the sweeper uses it so a short
+    auto-release expiry is not floored by a longer reporting threshold.
+    """
     now = now or utcnow()
-    cutoff = now - dt.timedelta(hours=settings.claim_stale_hours)
+    threshold = settings.claim_stale_hours if min_idle_hours is None else min_idle_hours
+    cutoff = now - dt.timedelta(hours=threshold)
     agents = {row.name: row for row in session.execute(select(Agent)).scalars()}
 
     stale: list[StaleClaim] = []
@@ -334,12 +340,27 @@ def sweep(session: Session, settings: Settings, *, now: dt.datetime | None = Non
     still_stale: list[StaleClaim] = []
     errors: list[str] = []
 
-    for stale in stale_claims(session, settings, now=now):
+    # Gather candidates at whichever threshold is lower. Reporting starts at
+    # claim_stale_hours, but if auto-release is set shorter than that, filtering on the
+    # stale threshold first would make the expiry unreachable *and* invisible — the
+    # claim would not even appear in still_stale.
+    threshold_hours = settings.claim_stale_hours
+    if settings.auto_release_enabled:
+        threshold_hours = min(threshold_hours, settings.claim_expiry_hours)
+
+    for stale in stale_claims(session, settings, now=now, min_idle_hours=threshold_hours):
         # Compare exact idle time, not the display-rounded hours: rounding to one
         # decimal place moves the threshold by up to three minutes, and swallows any
         # expiry shorter than about six.
         expiry_seconds = settings.claim_expiry_hours * 3600.0
         if not settings.auto_release_enabled or stale.idle_seconds < expiry_seconds:
+            still_stale.append(stale)
+            continue
+        # Never reclaim from an agent that is demonstrably alive. A heartbeat can be a
+        # bare liveness ping that carries no task, so a long quiet run legitimately
+        # looks idle while the agent is very much working — and this module exists to
+        # catch *dead* agents, not slow ones.
+        if stale.owner_status == ONLINE:
             still_stale.append(stale)
             continue
         try:

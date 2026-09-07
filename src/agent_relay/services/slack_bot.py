@@ -31,10 +31,11 @@ from sqlalchemy.orm import Session
 
 from agent_relay.config import Settings, get_settings
 from agent_relay.db.models import Event, IngestRecord
+from agent_relay.db.session import session_scope
 from agent_relay.models.enums import EventType
 from agent_relay.models.schemas import EventCreate
 from agent_relay.services.events import create_event
-from agent_relay.services.slack import format_event, redact
+from agent_relay.services.slack import SlackNotifier, format_event, redact
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +101,13 @@ def verify_slack_signature(
 
     basestring = b"v0:" + timestamp.encode("utf-8") + b":" + body
     digest = hmac.new(signing_secret.encode("utf-8"), basestring, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(f"v0={digest}", signature)
+    return hmac.compare_digest(
+        f"v0={digest}".encode(),
+        # Starlette decodes headers as latin-1, so a raw high byte yields a non-ASCII
+        # str and the str form of compare_digest raises TypeError. Comparing bytes is
+        # still constant-time and cannot raise on arbitrary input.
+        signature.encode("utf-8", "ignore"),
+    )
 
 
 def resolve_project_channel(settings: Settings, project: str | None) -> str | None:
@@ -347,3 +354,46 @@ def ingest_slack_event(
         return None
     session.refresh(event)
     return event
+
+
+async def announce(
+    payload: dict[str, Any], links: dict[str, str] | None, settings: Settings
+) -> None:
+    """Post one event to Slack by the best route available, and remember where it landed.
+
+    This is the outbound half of the round trip. Posting through the *bot* returns a
+    message ``ts``; storing that ts on the event is what later lets a human's threaded
+    reply find the event it is answering. Posting through an incoming *webhook* cannot
+    return a ts, so with only ``SLACK_WEBHOOK_URL`` set the relay can talk but not
+    listen — which is exactly the difference between the two Slack setups.
+
+    Runs as a background task after the response, and never raises.
+    """
+    bot = SlackBot(settings)
+    channel = resolve_project_channel(settings, payload.get("project"))
+    if bot.enabled and channel:
+        ts, posted_channel = await bot.post_event(payload, links, channel)
+        if ts and (event_id := payload.get("id")) is not None:
+            _remember_slack_message(int(event_id), ts, posted_channel)
+        return
+
+    # No bot token (or no channel to post to): fall back to the webhook.
+    await SlackNotifier(settings).post_event(payload, links)
+
+
+def _remember_slack_message(event_id: int, ts: str, channel: str | None) -> None:
+    """Store the Slack coordinates of a posted event, in its own session.
+
+    The request's session is long gone by the time this runs, and a failure here must
+    not be able to undo the event that was already committed.
+    """
+    try:
+        with session_scope() as session:
+            event = session.get(Event, event_id)
+            if event is None:  # pragma: no cover - only if the row was deleted
+                return
+            event.slack_ts = ts
+            event.slack_channel = channel
+            session.commit()
+    except Exception as exc:  # noqa: BLE001 - losing the anchor must not break anything
+        logger.warning("could not record slack ts for event %s: %s", event_id, type(exc).__name__)

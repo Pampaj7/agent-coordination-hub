@@ -134,12 +134,19 @@ class Scheduler:
 
     async def run_status(self) -> None:
         """Post a per-project briefing to Slack."""
-        from agent_relay.services.coordinator import build_brief  # deferred import
+        from agent_relay.services import coordination  # deferred import
+        from agent_relay.services.coordinator import write_brief  # deferred import
 
         for project in self.settings.status_project_list:
+            # Compute the summary and CLOSE the session before awaiting the model.
+            # Holding the read transaction across a multi-second LLM call blocks WAL
+            # checkpointing for every other writer in the process.
             with session_scope() as session:
-                result = await build_brief(session, project, settings=self.settings)
-            await self.post_status(project, str(result["brief"]))
+                summary = coordination.build_summary(
+                    session, project, window_hours=self.settings.context_window_hours
+                )
+            brief, _source = await write_brief(summary, self.settings)
+            await self.post_status(project, brief)
 
     async def post_status(self, project: str, brief: str) -> None:
         """Send the briefing to Slack, preferring the bot token over the webhook.

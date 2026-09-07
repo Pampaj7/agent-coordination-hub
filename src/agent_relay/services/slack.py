@@ -154,7 +154,9 @@ class SlackNotifier:
         return self.settings.slack_enabled
 
     def should_post(self, event_type: str) -> bool:
-        if not self.enabled:
+        # A relay configured with only a bot token still posts — the bot is a second,
+        # better transport, not a modifier on the webhook.
+        if not (self.enabled or self.settings.slack_bot_enabled):
             return False
         allowed = self.settings.slack_event_type_filter
         return allowed is None or event_type.upper() in allowed

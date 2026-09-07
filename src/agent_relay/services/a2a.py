@@ -53,6 +53,16 @@ from agent_relay.services import state as state_service
 #: Who an A2A caller is recorded as when it does not identify itself. Distinct from
 #: any real agent name so the event log never lies about provenance.
 DEFAULT_AGENT = "a2a-client"
+#: Prefix that keeps an external peer's chosen name out of the team's namespace.
+AGENT_PREFIX = "a2a:"
+
+
+def _namespaced_agent(name: str) -> str:
+    """`leo-codex` -> `a2a:leo-codex`, and an already-prefixed name is left alone."""
+    cleaned = name.strip() or DEFAULT_AGENT
+    return cleaned if cleaned.startswith(AGENT_PREFIX) else f"{AGENT_PREFIX}{cleaned}"
+
+
 DEFAULT_PORT_URL = "http://127.0.0.1:8077"
 MAX_LIST_ROWS = 10
 
@@ -379,7 +389,10 @@ def handle_message(
     # post_update: the only writing intent, and it writes a plain UPDATE event.
     if not intent.summary:
         return unsupported_result("An update needs a summary after the colon.")
-    agent = _caller(params, "agent", DEFAULT_AGENT) or DEFAULT_AGENT
+    # The caller picks its own name, so it must be namespaced the way GitHub and Slack
+    # traffic is. Without this an external peer can post as "leo-codex" and the event
+    # log cannot tell the team's own agent from a stranger's framework.
+    agent = _namespaced_agent(_caller(params, "agent", DEFAULT_AGENT) or DEFAULT_AGENT)
     event = event_service.create_event(
         session,
         EventCreate(
@@ -391,7 +404,13 @@ def handle_message(
             summary=intent.summary,
             metadata={"source": "a2a"},
         ),
+        commit=False,
     )
+    # `metadata.source` is a free-form field the caller could also have set; the column
+    # is what every consumer reads, so set it here and not from the payload.
+    event.source = "a2a"
+    session.commit()
+    session.refresh(event)
     return text_message(
         f"Recorded {event.ref}: UPDATE on {intent.project}"
         + (f" task {intent.task}" if intent.task else "")

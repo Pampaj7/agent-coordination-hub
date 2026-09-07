@@ -518,3 +518,120 @@ def test_project_resolution_prefers_the_explicit_name_then_config_then_repo() ->
 
     bare = Settings(AGENT_RELAY_DB_URL="sqlite://")
     assert github_ingest.resolve_project(bare) is None
+
+
+def test_a_push_whose_first_commit_has_no_message_is_not_dropped(
+    hook_client: TestClient,
+) -> None:
+    """Regression: `"".splitlines()[0]` raised IndexError and lost the whole push.
+
+    The route's catch-all turned it into a 200 "ignored", so GitHub never retried and
+    every commit in that push vanished silently. `git commit --allow-empty-message` is
+    enough to trigger it.
+    """
+    payload = {
+        "ref": "refs/heads/exp/temporal-ablation",
+        "deleted": False,
+        "commits": [
+            {
+                "id": "82bd18f",
+                "message": "",
+                "url": "https://github.com/acme/tether/commit/82bd18f",
+            },
+            {
+                "id": "9ac21de",
+                "message": "real message",
+                "url": "https://github.com/acme/tether/commit/9ac21de",
+            },
+        ],
+        "sender": {"login": "leonardo"},
+    }
+    response = deliver(hook_client, "push", payload, delivery="push-empty-msg")
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["status"] == "created", "the push must be recorded, not silently dropped"
+    assert body["event"]["event_type"] == "UPDATE"
+    assert "2 commits" in body["event"]["summary"] or "commits" in body["event"]["summary"]
+
+
+def test_ingested_activity_cannot_clear_a_real_blocker(hook_client: TestClient) -> None:
+    """Regression: a GitHub comment silently un-blocked a task.
+
+    Ingested activity arrives as UPDATE/DECISION, which are in UNBLOCKING_EVENTS. The
+    rules were written when only real agents could produce those, so one unrelated
+    issue comment made a genuinely blocked task read as unblocked in /context, /tasks,
+    the coordination summary and the LLM brief — destroying the one signal that exists
+    to make a human look.
+    """
+    hook_client.post("/claim", json={"agent": "leo-codex", "project": "tether", "task": "GH-142"})
+    hook_client.post(
+        "/events",
+        json={
+            "event_type": "BLOCKED",
+            "agent": "leo-codex",
+            "project": "tether",
+            "task": "GH-142",
+            "summary": "waiting on a credential",
+        },
+    )
+    blocked = [t for t in hook_client.get("/tasks").json() if t["blocked"]]
+    assert [t["task"] for t in blocked] == ["GH-142"]
+
+    # An unrelated human comment arrives from GitHub.
+    deliver(
+        hook_client,
+        "issue_comment",
+        {
+            "action": "created",
+            "issue": {
+                "number": 142,
+                "title": "Temporal ablation",
+                "html_url": "https://github.com/acme/tether/issues/142",
+            },
+            "comment": {
+                "body": "any news?",
+                "html_url": "https://github.com/acme/tether/issues/142#c1",
+            },
+            "sender": {"login": "leonardo"},
+        },
+        delivery="comment-1",
+    )
+
+    still_blocked = [t for t in hook_client.get("/tasks").json() if t["blocked"]]
+    assert [t["task"] for t in still_blocked] == ["GH-142"], "a comment must not unblock"
+
+    summary = hook_client.get("/coordination/summary", params={"project": "tether"}).json()
+    assert [b["task"] for b in summary["blocked"]] == ["GH-142"]
+    # ...and it must not look like a second agent duplicating leo-codex's work.
+    assert summary["possible_conflicts"] == []
+
+
+def test_the_claim_holders_own_push_is_not_a_conflict(hook_client: TestClient) -> None:
+    """`leo-codex` and `github:leonardo` are different names by construction.
+
+    Without filtering on provenance, every push by the person who owns the claim looked
+    like a second agent working the same task, flooding suggested_actions — which is
+    exactly what the coordinator feeds the model.
+    """
+    hook_client.post("/claim", json={"agent": "leo-codex", "project": "tether", "task": "GH-142"})
+    deliver(
+        hook_client,
+        "push",
+        {
+            "ref": "refs/heads/exp/temporal-ablation",
+            "deleted": False,
+            "commits": [
+                {
+                    "id": "82bd18f",
+                    "message": "H=8 sweep",
+                    "url": "https://github.com/acme/tether/commit/82bd18f",
+                }
+            ],
+            "sender": {"login": "leonardo"},
+        },
+        delivery="push-1",
+    )
+    summary = hook_client.get("/coordination/summary", params={"project": "tether"}).json()
+    assert summary["possible_conflicts"] == []
+    assert not any("duplicated work" in a for a in summary["suggested_actions"])

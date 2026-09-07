@@ -203,17 +203,17 @@ def reply_envelope(
 
 
 def announce(relay: Relay, event: dict[str, Any]) -> tuple[str | None, str | None]:
-    """Post an event with the bot and store the returned ts, as the server wiring does."""
-    bot = SlackBot(relay.settings)
-    channel = resolve_project_channel(relay.settings, event["project"])
-    ts, posted_channel = asyncio.run(bot.post_event(event, None, channel))
-    if ts:
-        with session_scope() as session:
-            row = session.get(Event, event["id"])
-            assert row is not None
-            row.slack_ts, row.slack_channel = ts, posted_channel
-            session.commit()
-    return ts, posted_channel
+    """Where did the server's own Slack post land?
+
+    This used to re-post the event by hand, imitating wiring that did not exist yet.
+    It does not imitate anything now: ``POST /events`` dispatches through
+    ``slack_bot.announce`` in a background task, and TestClient runs background tasks
+    before returning — so by the time a test calls this, the real code has already
+    posted and recorded the result. Reading it back is what makes these tests cover
+    the production path instead of a parallel implementation of it.
+    """
+    row = stored(event["id"])
+    return row.slack_ts, row.slack_channel
 
 
 def stored(event_id: int) -> Event:
@@ -557,3 +557,79 @@ def test_slack_markup_is_stripped_and_long_replies_truncated() -> None:
     assert clean_slack_text("a &amp; b &lt;c&gt;") == "a & b <c>"
     long_reply = clean_slack_text("x" * 5000)
     assert len(long_reply) <= 2000 and long_reply.endswith("…")
+
+
+def test_the_round_trip_works_through_the_real_server_wiring(bot_relay: Relay) -> None:
+    """Regression: the outbound half of two-way Slack was never wired up.
+
+    `SlackBot.post_event` existed and the inbound path was correct, but nothing in
+    `src/` called it — `POST /events` went out through the webhook notifier, which
+    cannot return a message ts. With `slack_ts` always NULL no threaded reply could
+    ever find its anchor, so every human answer was silently ignored. This test drives
+    only the public API, so it fails if that wiring is ever removed again.
+    """
+    question = post_event(
+        bot_relay.client,
+        event_type="QUESTION",
+        target_agent="niccolo-claude",
+        summary="Masking before or after resize?",
+        details={},
+        artifacts=[],
+    )
+    assert question["ref"] == "Q-1"
+
+    # The server posted it and remembered where, with no help from this test.
+    row = stored(question["id"])
+    assert row.slack_ts, "POST /events must record the Slack ts via the bot"
+    assert row.slack_channel
+
+    open_now = bot_relay.client.get("/context", params={"project": "tether"}).json()
+    assert [q["ref"] for q in open_now["unresolved_questions"]] == ["Q-1"]
+
+    # A human replies in that Slack thread.
+    response = deliver(
+        bot_relay,
+        reply_envelope(
+            channel=row.slack_channel,
+            thread_ts=row.slack_ts,
+            user="U04NIC",
+            text="before resize, in the loader",
+            event_id="Ev-roundtrip",
+        ),
+    )
+    assert response.json()["status"] == "created"
+
+    answer = response.json()["event"]
+    assert answer["event_type"] == "ANSWER"
+    assert answer["in_reply_to"] == "Q-1"
+    assert answer["agent"].startswith("slack:")
+
+    # The payoff: the question is closed.
+    after = bot_relay.client.get("/context", params={"project": "tether"}).json()
+    assert after["unresolved_questions"] == []
+
+
+def test_a_non_ascii_signature_is_rejected_not_a_500(bot_relay: Relay) -> None:
+    """Regression: an unauthenticated 500 on a public endpoint, and a retry storm.
+
+    Starlette decodes header bytes as latin-1, so a raw high byte gives a non-ASCII
+    str, and `hmac.compare_digest` on str raises TypeError for non-ASCII input. The
+    check runs before the handler's try block, so it escaped as a 500 — which is
+    exactly what makes Slack retry the same bad payload forever.
+    """
+    # The raw byte 0xE9 is what a hostile client puts on the wire; Starlette hands the
+    # handler the latin-1 decoding of it, which is a non-ASCII str.
+    raw_signature = b"v0=\xe9" + b"a" * 63
+    assert not raw_signature.decode("latin-1").isascii()
+
+    body = json.dumps({"type": "event_callback", "event": {}}).encode()
+    response = bot_relay.client.post(
+        EVENTS_PATH,
+        content=body,
+        headers=[
+            (b"content-type", b"application/json"),
+            (b"x-slack-request-timestamp", str(int(time.time())).encode()),
+            (b"x-slack-signature", raw_signature),
+        ],
+    )
+    assert response.status_code == 401, "a malformed signature is a rejection, not a crash"

@@ -63,6 +63,10 @@ class EventOut(BaseModel):
     artifacts: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: dt.datetime
+    source: str = Field(
+        default="agent",
+        description='Where the event came from: "agent", "github", "slack" or "a2a".',
+    )
     github_url: str | None = None
 
 

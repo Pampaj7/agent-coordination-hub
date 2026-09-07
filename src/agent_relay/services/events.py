@@ -189,6 +189,7 @@ def to_out(event: Event, github: GitHubService | None = None) -> EventOut:
         artifacts=event.artifacts_json or [],
         metadata=event.metadata_json or {},
         created_at=event.created_at,
+        source=event.source or "agent",
         github_url=github_url,
     )
 

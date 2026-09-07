@@ -145,3 +145,15 @@ def test_since_filter_excludes_the_past(client: TestClient) -> None:
 def test_limit_is_bounded(client: TestClient) -> None:
     assert client.get("/events", params={"limit": 10_000}).status_code == 422
     assert client.get("/events", params={"limit": 0}).status_code == 422
+
+
+def test_source_defaults_to_agent_and_is_visible(client: TestClient) -> None:
+    """Provenance is part of the wire contract, not just a private column.
+
+    Consumers need to tell an agent's own UPDATE from one ingested out of GitHub or
+    Slack — the coordination rules depend on that distinction, so a reader must be
+    able to check it too.
+    """
+    created = post_event(client)
+    assert created["source"] == "agent"
+    assert client.get("/events").json()[0]["source"] == "agent"

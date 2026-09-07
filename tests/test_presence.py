@@ -479,3 +479,71 @@ def test_a_claim_just_under_the_expiry_is_not_released(
     assert report["released"] == []
     assert [c["task"] for c in report["still_stale"]] == ["GH-142"]
     assert client.get("/claims").json()[0]["agent"] == "leo-codex"
+
+
+def test_an_online_agent_never_loses_its_claim(expiring: tuple[TestClient, Session]) -> None:
+    """Regression: the sweep released claims held by agents that were demonstrably alive.
+
+    A heartbeat may be a bare liveness ping carrying no task, so `last_activity_at` on
+    the claim goes stale while the agent is still working — exactly the long quiet run
+    heartbeats exist to cover. Reclaiming there hands a live agent's task to someone
+    else mid-run, which is worse than the abandoned claim the sweep is meant to fix.
+    """
+    client, db = expiring  # stale after 1h, expiry after 2h
+
+    client.post("/claim", json={"agent": "leo-codex", "project": "tether", "task": "GH-142"})
+    # The claim looks abandoned...
+    idle = (dt.datetime.now(dt.UTC) - dt.timedelta(hours=5)).replace(tzinfo=None)
+    db.execute(
+        text("UPDATE task_claims SET last_activity_at = :when WHERE task = 'GH-142'"),
+        {"when": idle},
+    )
+    db.commit()
+    # ...but the agent is unmistakably alive.
+    client.post("/heartbeat", json={"agent": "leo-codex"})
+
+    assert client.get("/agents").json()[0]["status"] == "online"
+
+    report = client.post("/claims/sweep", json={}).json()
+    assert report["released"] == [], "an online agent must keep its claim"
+    assert [c["task"] for c in report["still_stale"]] == ["GH-142"]
+    assert client.get("/claims").json()[0]["agent"] == "leo-codex"
+
+
+def test_an_expiry_shorter_than_the_stale_threshold_still_fires(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: candidates were gathered at the stale threshold.
+
+    With expiry (2h) shorter than the reporting threshold (24h), a claim idle 5h was
+    filtered out before the expiry check ever ran — so it was never released, and never
+    even reported as still-stale. The configuration looked honoured and did nothing.
+    """
+    monkeypatch.chdir(tmp_path)
+    for name in INTEGRATION_ENV:
+        monkeypatch.delenv(name, raising=False)
+    for name in PRESENCE_ENV:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("AGENT_RELAY_DB_URL", f"sqlite:///{tmp_path}/test.db")
+    monkeypatch.setenv("AGENT_RELAY_CLAIM_STALE_HOURS", "24")
+    monkeypatch.setenv("AGENT_RELAY_CLAIM_EXPIRY_HOURS", "2")
+    get_settings.cache_clear()
+    reset_engine()
+    init_db(get_settings())
+
+    with TestClient(app) as client:
+        client.post("/claim", json={"agent": "leo-codex", "project": "tether", "task": "GH-142"})
+        with session_scope() as db:
+            idle = (dt.datetime.now(dt.UTC) - dt.timedelta(hours=5)).replace(tzinfo=None)
+            db.execute(
+                text("UPDATE task_claims SET last_activity_at = :when WHERE task = 'GH-142'"),
+                {"when": idle},
+            )
+            db.commit()
+
+        report = client.post("/claims/sweep", json={}).json()
+        assert [c["task"] for c in report["released"]] == ["GH-142"]
+        assert client.get("/claims").json() == []
+
+    reset_engine()
+    get_settings.cache_clear()

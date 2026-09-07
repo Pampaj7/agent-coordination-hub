@@ -21,6 +21,7 @@ import logging
 from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from agent_relay.config import Settings
 from agent_relay.services import coordination as coordination_service
@@ -228,6 +229,12 @@ async def write_brief(summary: CoordinationSummary, settings: Settings) -> tuple
     except anthropic.APIConnectionError:
         logger.warning("coordinator unreachable; falling back to the deterministic brief")
         return deterministic_brief(summary), "deterministic"
+    except Exception as exc:  # noqa: BLE001 - the contract is that a briefing always returns
+        # Anything else the SDK can throw: a response the client cannot validate, or a
+        # TypeError from an older SDK that lacks a parameter we pass. A status post that
+        # 500s is worse than a plainer one.
+        logger.warning("coordinator call failed: %s: %s", type(exc).__name__, exc)
+        return deterministic_brief(summary), "deterministic"
     finally:
         await client.close()
 
@@ -252,7 +259,11 @@ async def build_brief(
     github: GitHubService | None = None,
 ) -> dict[str, Any]:
     """Deterministic summary first, prose second. The summary is always returned."""
-    summary = coordination_service.build_summary(
+    # build_summary scans the project's event log with the sync ORM. `build_brief` is
+    # awaited from an async route, so it has to hop to the threadpool or it blocks the
+    # event loop for every other in-flight request.
+    summary = await run_in_threadpool(
+        coordination_service.build_summary,
         session,
         project,
         window_hours=window_hours or settings.context_window_hours,

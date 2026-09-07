@@ -17,10 +17,12 @@ dependencies = [
 
 [project.optional-dependencies]
 # The LLM coordinator. Optional so the base install stays as small as V1's.
-coordinator = ["anthropic>=0.69"]
+# >=1.0: earlier releases lack output_config/adaptive thinking, which the
+# coordinator passes on every call.
+coordinator = ["anthropic>=1.0"]
 # MCP server, so Claude Code / Codex get relay tools natively.
 mcp = ["mcp>=1.9"]
-all = ["anthropic>=0.69", "mcp>=1.9"]
+all = ["anthropic>=1.0", "mcp>=1.9"]
 
 [project.scripts]
 agent-relay = "agent_relay.cli.main:main"

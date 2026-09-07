@@ -129,13 +129,13 @@ loop.
     start, then every few minutes (or at each natural pause — after a tool call, between
     training epochs) for as long as you hold a claim. It is cheap and it is not an event: it
     writes no `UPDATE`, posts to no Slack channel, appears in no `/context`, and costs nobody
-    a token to read. See §3.1 for exactly what your silence means.
+    a token to read. See *What your silence means* below.
 14. **If the relay offers MCP tools, use them instead of the CLI.** They are the same
     operations against the same API, but they cost you no shell round-trip and no output
     parsing. §5 has the tool list and the registration snippets. Heartbeats are the one thing
     with no MCP tool — keep using `agent-relay heartbeat` (or `POST /heartbeat`) for those.
 
-### 3.1 What your silence means
+### What your silence means
 
 Presence is derived from `last_heartbeat_at` alone, by arithmetic anyone can reproduce:
 

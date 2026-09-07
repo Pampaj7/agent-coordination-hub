@@ -19,6 +19,7 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, status
+from starlette.concurrency import run_in_threadpool
 
 from agent_relay.api.deps import GitHubDep, SessionDep, SettingsDep
 from agent_relay.services import events as event_service
@@ -81,12 +82,19 @@ async def github_webhook(
         return _ignored("body is not a json object", event_name, delivery)
 
     external_id = github_ingest.external_id_for(event_name, delivery, payload)
-    if github_ingest.already_ingested(session, github_ingest.SOURCE, external_id):
+    # Blocking ORM work must not run on the event loop: SQLite is configured with
+    # busy_timeout=5000, so a contended write here would stall every other in-flight
+    # request for up to five seconds. Same threadpool hop as every other blocking
+    # route in this app.
+    if await run_in_threadpool(
+        github_ingest.already_ingested, session, github_ingest.SOURCE, external_id
+    ):
         # GitHub retries on any non-2xx and on its own schedule; a replay is normal.
         return {"status": "duplicate", "event": None}
 
     try:
-        event = github_ingest.ingest_webhook(
+        event = await run_in_threadpool(
+            github_ingest.ingest_webhook,
             session,
             event_name=event_name,
             delivery_id=delivery,

@@ -32,6 +32,7 @@ from agent_relay.services import claims as claim_service
 from agent_relay.services import context as context_service
 from agent_relay.services import coordination as coordination_service
 from agent_relay.services import events as event_service
+from agent_relay.services import slack_bot
 from agent_relay.services import state as state_service
 from agent_relay.services.claims import ClaimConflict, ClaimNotFound
 from agent_relay.services.github import GitHubService
@@ -85,12 +86,14 @@ def _notify_slack(
     """Queue a Slack post to run *after* the response is sent.
 
     Storage has already been committed by this point, so a Slack outage costs a log
-    line and nothing else.
+    line and nothing else. Dispatch goes through ``slack_bot.announce``, which prefers
+    the bot when a token is configured — that is the path that returns a message ts and
+    records it, without which a human's threaded reply has no event to attach to.
     """
     if not slack.should_post(str(payload.get("event_type", ""))):
         return
     links = github.links_for(task=payload.get("task"), branch=payload.get("branch"))
-    background.add_task(slack.post_event, payload, links)
+    background.add_task(slack_bot.announce, payload, links, slack.settings)
 
 
 def _conflict(exc: ClaimConflict, session: SessionDep) -> HTTPException:

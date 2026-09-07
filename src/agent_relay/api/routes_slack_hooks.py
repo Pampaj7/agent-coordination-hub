@@ -18,6 +18,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from agent_relay.api.deps import GitHubDep, SessionDep, SettingsDep
 from agent_relay.config import Settings, get_settings
@@ -104,12 +105,18 @@ async def slack_events(
         return SlackHookResult(status="ignored")
 
     event_id = str(payload.get("event_id") or "")
-    if event_id and already_ingested(session, event_id):
-        # A retry of something we already stored. Answer 200 so Slack stops asking.
-        return SlackHookResult(status="duplicate")
+    # Blocking ORM work must not run on the event loop: SQLite is configured with
+    # busy_timeout=5000, so a contended write here would stall every other in-flight
+    # request for up to five seconds. Same threadpool hop as every other blocking
+    # route in this app.
+    if event_id:
+        seen: bool = await run_in_threadpool(already_ingested, session, event_id)
+        if seen:
+            # A retry of something we already stored. Answer 200 so Slack stops asking.
+            return SlackHookResult(status="duplicate")
 
     try:
-        event = ingest_slack_event(session, payload, settings)
+        event = await run_in_threadpool(ingest_slack_event, session, payload, settings)
     except Exception:
         # A 500 here makes Slack retry the same bad payload forever, so we log it
         # loudly and answer 200. (Ruff allows this broad catch: it is logged.)

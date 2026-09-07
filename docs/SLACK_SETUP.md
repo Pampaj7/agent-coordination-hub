@@ -7,6 +7,20 @@ Slack is **optional and best-effort**. With `SLACK_WEBHOOK_URL` unset, the relay
 completely — events are stored, claims are enforced, `/context` and `/coordination/summary`
 are unaffected. Nothing downstream depends on Slack.
 
+There are two ways to wire Slack up, and this page is about the first:
+
+| | Incoming webhook (this page) | Bot token (§7) |
+|---|---|---|
+| Direction | Out only — the relay posts | Both ways |
+| Setup | One URL, two minutes | An app with scopes, Event Subscriptions, a public URL |
+| Channels | One, fixed by the webhook | Per project, via `SLACK_CHANNEL_MAP` |
+| Humans can reply | No | Yes — a threaded reply becomes an `ANSWER` and closes the question |
+| Needs inbound connectivity | No | Yes |
+
+Start with the webhook. Everything below applies to both paths — the rendering, the
+best-effort semantics and most of the troubleshooting are shared. §7 covers the upgrade, and
+[`INTEGRATIONS.md`](INTEGRATIONS.md) §2 is the full reference for it.
+
 ---
 
 ## 1. Create the Slack app
@@ -16,14 +30,16 @@ are unaffected. Nothing downstream depends on Slack.
 3. In the left sidebar open **Incoming Webhooks** and toggle **Activate Incoming Webhooks**
    to **On**.
 4. Create the destination channel in Slack if it does not exist. Suggested: **`#agent-relay`**
-   (one channel for all projects — per-project channels are not implemented).
+   — an incoming webhook is bound to exactly one channel, so this path is one channel for all
+   projects. Per-project routing needs the bot token (§7).
 5. Back in the app settings, click **Add New Webhook to Workspace**, choose `#agent-relay`,
    and **Allow**.
 6. Copy the generated URL. It looks like
    `https://hooks.slack.com/services/<workspace-id>/<webhook-id>/<token>`.
 
 The webhook is bound to that one channel and can only post — it cannot read messages. That is
-all the relay needs, and all it should have.
+all this path needs, and all it should have. If you later want humans to be able to answer an
+agent's question from Slack, §7 adds a bot token alongside this; the webhook keeps working.
 
 ---
 
@@ -109,7 +125,12 @@ and `integrations.github` are the strings `enabled` / `disabled`, and `integrati
 `required` when `AGENT_RELAY_API_TOKEN` is set and `open` when it is not.
 
 `"slack": "disabled"` means the webhook URL is unset, blank, or the server was not restarted.
-The `/health` endpoint is the one route that never requires a token.
+`/health` reports the **webhook** only; the bot token and inbound events are not part of
+`integrations`. To confirm those, read the relay's startup log line, which prints the non-secret
+configuration summary including `slack_bot` and `slack_events`.
+
+`/health` never requires a token, and is one of only a handful of routes that do not — see
+[`ARCHITECTURE.md`](ARCHITECTURE.md) §8.
 
 ### 3.2 Post a test event with curl
 
@@ -345,6 +366,7 @@ disagree about code, GitHub is right.
 | `channel_not_found` | The channel was deleted or archived, or the webhook was pointed at a private channel the app was removed from | Create a new webhook against a live channel |
 | `429 rate_limited` in the log | Slack throttles incoming webhooks at roughly one message per second per webhook; a burst of events exceeded it | Narrow `SLACK_EVENT_TYPES` (e.g. drop `UPDATE`), and post on milestones rather than per file edit. There are no retries — the events are still in the relay. |
 | Timeouts in the log | Slow network, or `SLACK_TIMEOUT_SECONDS` too low | Raise `SLACK_TIMEOUT_SECONDS`. Note this only affects the background attempt, never agent latency. |
+| Bot-path problems: Request URL will not verify, `401` on deliveries, replies not becoming events | Inbound Slack is configured separately | [`INTEGRATIONS.md`](INTEGRATIONS.md) §2.6 |
 | Messages appear but with no GitHub link | GitHub not configured, or the task id does not match `GITHUB_TASK_PREFIX` | Set `GITHUB_OWNER`/`GITHUB_REPO`; use task ids like `GH-142` |
 | Events missing entirely (not just in Slack) | An agent is posting to a different `AGENT_RELAY_URL`, or a different project name | `agent-relay health`, then `agent-relay events --project P --limit 20` |
 
@@ -352,7 +374,62 @@ Server logs are the diagnostic surface: raise verbosity with `AGENT_RELAY_LOG_LE
 
 ---
 
-## 7. Security
+## 7. Upgrading to the bidirectional bot
+
+Everything above stays. This adds a second, richer path alongside it.
+
+**What you get**
+
+- **Humans can answer from Slack.** A threaded reply to a `QUESTION` the relay posted becomes an
+  `ANSWER` event with `in_reply_to` set, which closes the question in `/context` and
+  `/coordination/summary`. A reply to any other event becomes an `UPDATE` — a human note on that
+  piece of work. Either way the relay acknowledges in-thread.
+- **Per-project channels.** `SLACK_CHANNEL_MAP=tether=C012AB,drends=C034CD`, with
+  `SLACK_DEFAULT_CHANNEL` catching anything unmapped. Three projects stop sharing one firehose.
+- **Scheduled team status posts.** With `AGENT_RELAY_STATUS_INTERVAL_MINUTES` and
+  `AGENT_RELAY_STATUS_PROJECTS`, the scheduler posts a briefing per project on a cadence.
+
+**What it costs**
+
+- A Slack app with `chat:write` and `channels:history` (plus `groups:history` for private
+  channels) — more than the post-only permission a webhook has.
+- A **publicly reachable URL** for `POST /webhooks/slack/events`, because Slack has to be able to
+  reach you. See [`OPERATIONS.md`](OPERATIONS.md) §4 for exposing only that route safely.
+
+**How the round trip works**
+
+`chat.postMessage` returns the message `ts`; the relay stores it on the event as `slack_ts`. A
+human's threaded reply carries that same string back as `thread_ts`, which is how the relay finds
+the exact event being answered. Inbound requests are authenticated by Slack's v0 signature over
+the raw body plus a 5-minute replay window — not by the relay's bearer token, which Slack cannot
+send.
+
+**Configuration**
+
+```dotenv
+SLACK_BOT_TOKEN=xoxb-...
+SLACK_SIGNING_SECRET=...
+SLACK_DEFAULT_CHANNEL=C0DEFAULT
+SLACK_CHANNEL_MAP=tether=C012AB,drends=C034CD
+```
+
+Both the token and the signing secret are required before `/webhooks/slack/events` accepts
+anything; without them it answers `503` and Slack will not verify the Request URL. Restart after
+editing `.env`.
+
+**What the bot token buys you.** Storing the thread anchor requires posting with the bot
+token, because only `chat.postMessage` returns a message `ts`. Once `SLACK_BOT_TOKEN` is set,
+`POST /events` posts through the bot automatically and records where the message landed, so
+every event becomes answerable in its thread. With only a webhook the relay can talk but not
+listen.
+
+The full setup (scopes, Event Subscriptions, which bot events to subscribe to, what is ignored,
+and inbound-specific troubleshooting) is in [`INTEGRATIONS.md`](INTEGRATIONS.md) §2. It is not
+repeated here so the two pages cannot drift.
+
+---
+
+## 8. Security
 
 - **Never commit the webhook URL.** It is a bearer credential: anyone holding it can post to
   your channel. It lives in `.env`, which is gitignored. `.env.example` must stay blank.
@@ -362,6 +439,14 @@ Server logs are the diagnostic surface: raise verbosity with `AGENT_RELAY_LOG_LE
   edit and no delete — and they are mirrored to a channel other people can read.
 - If a webhook leaks, revoke it in the Slack app's **Incoming Webhooks** page and generate a
   new one. Nothing in the relay needs to change beyond `.env` and a restart.
-- The webhook grants post-only access to one channel. Do not grant the app additional scopes;
-  the relay does not read from Slack (see *Future ideas* in
-  [`ARCHITECTURE.md`](ARCHITECTURE.md)).
+- The webhook grants post-only access to one channel. On this path, do not grant the app
+  additional scopes — the relay reads nothing from Slack. If you take the §7 upgrade, grant
+  exactly `chat:write` and `channels:history` (plus `groups:history` for a private channel) and
+  nothing more.
+- **The bot token and signing secret are credentials too.** The bot token can post as the app
+  anywhere it is invited; the signing secret is what stops anyone from forging an inbound event.
+  Both live in `.env`. Rotation is "edit `.env`, restart" — see
+  [`OPERATIONS.md`](OPERATIONS.md) §4.5.
+- **A Slack reply becomes a permanent event.** A human answering in a thread writes an append-only
+  record authored `slack:<user id>`. Anyone who can type in that channel can write to the relay's
+  log — which is the feature, and worth knowing before inviting the bot into a wide channel.

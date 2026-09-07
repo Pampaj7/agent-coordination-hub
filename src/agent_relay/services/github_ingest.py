@@ -324,7 +324,11 @@ def _from_push(
         return None  # a zero-commit push (a force-push to the same tree, a branch create)
 
     branch = ref.removeprefix("refs/heads/")
-    subject = _clip(str(commits[0].get("message") or "").splitlines()[0], MAX_TITLE_CHARS)
+    # `"".splitlines()` is empty, so indexing it on a commit with no message raised
+    # IndexError and the route dropped the entire push. `git commit --allow-empty-message`
+    # is enough to trigger it.
+    first_line = (str(commits[0].get("message") or "").splitlines() or [""])[0]
+    subject = _clip(first_line, MAX_TITLE_CHARS)
     plural = "" if len(commits) == 1 else "s"
     headline = f"{len(commits)} commit{plural} pushed to {branch}"
     if subject:

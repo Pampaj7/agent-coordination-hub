@@ -76,8 +76,11 @@ def migrate(engine: Engine) -> list[str]:
                 )
                 applied.append(f"{table.name}.{column.name}")
 
-        # Backfill: rows written before `source` existed came from agents.
-        if "events.source" in applied:
+        # Backfill: rows written before `source` existed came from agents. Run this
+        # whenever the column exists rather than only when this run added it — a
+        # hand-patched or partially-upgraded database would otherwise keep NULLs in a
+        # column the ORM types as non-optional. The UPDATE is idempotent and cheap.
+        if "events" in existing_tables or "events.source" in applied:
             connection.execute(text("UPDATE events SET source = 'agent' WHERE source IS NULL"))
 
     if applied:

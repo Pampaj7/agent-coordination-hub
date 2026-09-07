@@ -160,7 +160,9 @@ def test_posting_an_update_creates_a_real_event(v2_client: TestClient) -> None:
     assert len(events) == 1
     event = events[0]
     assert event["event_type"] == "UPDATE"
-    assert event["agent"] == "peer-agent"
+    # Namespaced: an external peer cannot post under a team agent's name.
+    assert event["agent"] == "a2a:peer-agent"
+    assert event["source"] == "a2a"
     assert event["human_owner"] == "leonardo"
     assert event["task"] == "GH-142"
     assert event["summary"] == "retrained with the new split"
@@ -171,7 +173,8 @@ def test_posting_an_update_creates_a_real_event(v2_client: TestClient) -> None:
 def test_an_anonymous_update_is_attributed_honestly(v2_client: TestClient) -> None:
     send(v2_client, "post update for tether: switched to the new split")
     events = v2_client.get("/events").json()
-    assert events[0]["agent"] == "a2a-client"
+    assert events[0]["agent"] == "a2a:a2a-client"
+    assert events[0]["source"] == "a2a"
 
 
 def test_an_unsupported_instruction_lists_what_is_supported(v2_client: TestClient) -> None:

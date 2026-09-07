@@ -27,7 +27,12 @@ def require_token(
     if not expected:
         return
     scheme, _, presented = (authorization or "").partition(" ")
-    if scheme.lower() != "bearer" or not secrets.compare_digest(presented.strip(), expected):
+    if scheme.lower() != "bearer" or not secrets.compare_digest(
+        # Bytes, not str: compare_digest raises TypeError on non-ASCII input, and the
+        # Authorization header is attacker-controlled.
+        presented.strip().encode("utf-8", "ignore"),
+        expected.encode(),
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing or invalid bearer token.",
