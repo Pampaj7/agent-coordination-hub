@@ -20,9 +20,10 @@ import datetime as dt
 from typing import Any
 
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from agent_relay.db.models import utcnow
+from agent_relay.db.models import Agent, utcnow
 from agent_relay.models.enums import EventType
 from agent_relay.services import state as state_service
 from agent_relay.services.claims import list_active_claims
@@ -34,6 +35,11 @@ HANDOFF_WINDOW_HOURS = 72
 
 class InboxQuestion(BaseModel):
     ref: str
+    addressed_to: str | None = Field(
+        default=None,
+        description="The agent it was actually sent to; differs from you when a sibling "
+        "agent of the same human was named.",
+    )
     project: str
     task: str | None = None
     from_agent: str
@@ -44,6 +50,7 @@ class InboxQuestion(BaseModel):
 
 class InboxHandoff(BaseModel):
     ref: str
+    addressed_to: str | None = Field(default=None)
     project: str
     task: str | None = None
     from_agent: str
@@ -78,6 +85,23 @@ class Inbox(BaseModel):
         return not (self.questions_for_me or self.handoffs_to_me or self.my_tasks_needing_attention)
 
 
+def sibling_agents(session: Session, agent: str) -> set[str]:
+    """Every agent name belonging to the same human as ``agent``.
+
+    A person legitimately runs several agents — a CLI, a Claude Code session, a Codex
+    one — and they come and go. Addressing a question to one of them and having it be
+    invisible to the others is how a teammate ends up blocked waiting for an answer
+    nobody can see. Questions and handoffs are aimed at a *person*; only claims are
+    aimed at a process.
+    """
+    row = session.get(Agent, agent)
+    owner = row.human_owner if row is not None else None
+    if not owner:
+        return {agent}
+    stmt = select(Agent.name).where(Agent.human_owner == owner)
+    return set(session.execute(stmt).scalars()) | {agent}
+
+
 def build_inbox(
     session: Session,
     agent: str,
@@ -88,11 +112,13 @@ def build_inbox(
 ) -> Inbox:
     now = now or utcnow()
     events = state_service.fetch_events(session, project=project)
+    # Questions and handoffs follow the person; claims stay tied to the process.
+    mine = sibling_agents(session, agent)
 
     # Questions addressed to this agent that nobody has answered. Reuses the same
     # resolution rule as /context, so the two can never disagree about what is open.
     open_questions = [
-        q for q in state_service.build_open_questions(events, now=now) if q.to_agent == agent
+        q for q in state_service.build_open_questions(events, now=now) if q.to_agent in mine
     ]
     questions = [
         InboxQuestion(
@@ -102,6 +128,7 @@ def build_inbox(
             from_agent=q.from_agent,
             question=q.question,
             age_hours=q.age_hours,
+            addressed_to=q.to_agent,
             answer_with=(
                 f"agent-relay post answer --project {q.project}"
                 + (f" --task {q.task}" if q.task else "")
@@ -123,10 +150,11 @@ def build_inbox(
             inputs=[str(i) for i in (event.details_json or {}).get("inputs", [])],
             warnings=[str(w) for w in (event.details_json or {}).get("warnings", [])],
             received_hours_ago=round((now - event.created_at).total_seconds() / 3600.0, 1),
+            addressed_to=event.target_agent,
         )
         for event in events
         if event.event_type == EventType.HANDOFF.value
-        and event.target_agent == agent
+        and event.target_agent in mine
         and event.created_at >= cutoff
     ]
     handoffs.reverse()  # newest first
@@ -170,7 +198,10 @@ def as_text(inbox: Inbox) -> str:
         lines.append("\nQUESTIONS FOR YOU — answer these, you are the one who was asked")
         for q in inbox.questions_for_me:
             where = f" [{q.task}]" if q.task else ""
-            lines.append(f"  {q.ref}{where} from {q.from_agent} ({q.age_hours}h): {q.question}")
+            via = "" if q.addressed_to in (None, inbox.agent) else f" (sent to {q.addressed_to})"
+            lines.append(
+                f"  {q.ref}{where} from {q.from_agent} ({q.age_hours}h){via}: {q.question}"
+            )
             lines.append(f"      -> {q.answer_with}")
     if inbox.handoffs_to_me:
         lines.append("\nHANDED TO YOU — read the warnings before touching anything")

@@ -163,3 +163,92 @@ def test_the_rendered_text_tells_an_agent_what_to_do(client: TestClient) -> None
 
     empty = as_text(Inbox.model_validate(inbox(client, "andrea-agent")))
     assert "Nothing waiting" in empty, "an empty inbox must say so, not render blank"
+
+
+def test_a_question_to_a_sibling_agent_still_reaches_the_person(client: TestClient) -> None:
+    """Regression: a question aimed at one of a person's agents was invisible to the others.
+
+    Found in real use. A handoff was addressed to `niccolo-sonnet-5` — a name from the
+    setup instructions — while Niccolo actually ran `nachomar-gpt`. His agent correctly
+    refused to touch a task claimed by an identity that was not his, posted BLOCKED, and
+    waited for a human to intervene. Questions and handoffs are aimed at a *person*; only
+    claims are aimed at a process.
+    """
+    # Two agents, same human. Register them by having each post something.
+    post_event(client, agent="nachomar-gpt", human_owner="niccolo", summary="hello")
+    post_event(client, agent="niccolo-sonnet-5", human_owner="niccolo", summary="hello too")
+
+    post_event(
+        client,
+        event_type="QUESTION",
+        agent="pampaj-opus-5",
+        human_owner="pampaj",
+        target_agent="niccolo-sonnet-5",
+        summary="do we have IEEE Xplore access?",
+        details={},
+        artifacts=[],
+    )
+
+    # The agent that is actually running sees it...
+    mine = inbox(client, "nachomar-gpt")["questions_for_me"]
+    assert len(mine) == 1
+    assert mine[0]["addressed_to"] == "niccolo-sonnet-5", "and is told who it was sent to"
+
+    # ...and so does the named one, if it ever comes online.
+    assert len(inbox(client, "niccolo-sonnet-5")["questions_for_me"]) == 1
+
+    # Someone else's agent still does not.
+    assert inbox(client, "pampaj-opus-5")["questions_for_me"] == []
+
+
+def test_a_handoff_to_a_sibling_agent_reaches_the_person(client: TestClient) -> None:
+    post_event(client, agent="nachomar-gpt", human_owner="niccolo", summary="hello")
+    post_event(client, agent="niccolo-sonnet-5", human_owner="niccolo", summary="hello too")
+    client.post(
+        "/handoff",
+        json={
+            "agent": "pampaj-opus-5",
+            "target_agent": "niccolo-sonnet-5",
+            "project": "tether",
+            "task": "GH-3",
+            "summary": "search IEEE Xplore",
+            "warnings": ["do not claim the gap without checking"],
+        },
+    )
+    handoffs = inbox(client, "nachomar-gpt")["handoffs_to_me"]
+    assert len(handoffs) == 1
+    assert handoffs[0]["addressed_to"] == "niccolo-sonnet-5"
+    assert "do not claim the gap" in handoffs[0]["warnings"][0]
+
+
+def test_an_agent_with_no_known_owner_only_sees_its_own(client: TestClient) -> None:
+    """Without an owner there are no siblings to infer — fall back to the exact name."""
+    post_event(
+        client,
+        event_type="QUESTION",
+        agent="pampaj-opus-5",
+        target_agent="some-unregistered-agent",
+        summary="anyone?",
+        details={},
+        artifacts=[],
+    )
+    assert len(inbox(client, "some-unregistered-agent")["questions_for_me"]) == 1
+    assert inbox(client, "another-stranger")["questions_for_me"] == []
+
+
+def test_the_text_says_when_a_message_was_addressed_elsewhere(client: TestClient) -> None:
+    from agent_relay.services.inbox import Inbox, as_text
+
+    post_event(client, agent="nachomar-gpt", human_owner="niccolo", summary="hello")
+    post_event(client, agent="niccolo-sonnet-5", human_owner="niccolo", summary="hello too")
+    post_event(
+        client,
+        event_type="QUESTION",
+        agent="pampaj-opus-5",
+        target_agent="niccolo-sonnet-5",
+        summary="IEEE access?",
+        details={},
+        artifacts=[],
+    )
+    text = as_text(Inbox.model_validate(inbox(client, "nachomar-gpt")))
+    assert "sent to niccolo-sonnet-5" in text, "the agent must know it was not the named one"
