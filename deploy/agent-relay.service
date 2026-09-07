@@ -1,0 +1,53 @@
+# systemd unit for the Agent Relay.
+#
+#   sudo cp deploy/agent-relay.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now agent-relay
+#   systemctl status agent-relay
+#   journalctl -u agent-relay -f
+#
+# Edit User, WorkingDirectory and ExecStart to match the box. Everything else is
+# configuration, and configuration lives in the .env file next to the checkout —
+# never in this unit, so secrets are not world-readable in /etc.
+
+[Unit]
+Description=Agent Relay - multi-agent coordination for a small team
+Documentation=https://github.com/Pampaj7/agent-coordination-hub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=relay
+Group=relay
+WorkingDirectory=/opt/agent-coordination-hub
+
+# uv resolves the venv from the working directory; `--frozen` refuses to silently
+# re-resolve dependencies on a production box.
+ExecStart=/usr/local/bin/uv run --frozen agent-relay serve
+
+# The database and .env live under the working directory by default.
+Environment=AGENT_RELAY_HOST=0.0.0.0
+Environment=AGENT_RELAY_PORT=8077
+
+Restart=on-failure
+RestartSec=5s
+# SQLite plus a handful of agents: a restart loop means a real fault, not load.
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+# The relay needs its own directory and nothing else on the box.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/agent-coordination-hub
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

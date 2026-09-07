@@ -34,8 +34,22 @@ uv sync --extra mcp           # MCP SDK, for agent-relay-mcp
 uv sync --extra all           # both
 ```
 
-For a long-lived install, run it under whatever supervisor the box already has (systemd,
-`launchd`, tmux if you are honest about it). The relay has no daemon mode of its own.
+For a long-lived install, run it under whatever supervisor the box already has. The relay has
+no daemon mode of its own. Ready-to-edit units ship in [`deploy/`](../deploy):
+
+```bash
+# Linux
+sudo cp deploy/agent-relay.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now agent-relay
+journalctl -u agent-relay -f
+
+# macOS
+cp deploy/com.agent-relay.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.agent-relay.plist
+```
+
+Edit the user and paths in either file; leave configuration in the `.env` next to the
+checkout rather than in the unit, so secrets do not end up world-readable in `/etc`.
 
 ### 1.2 Docker
 

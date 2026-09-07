@@ -689,6 +689,7 @@ agent-coordination-hub/
 │   ├── INTEGRATIONS.md      # GitHub, Slack, MCP, A2A, trackers
 │   ├── OPERATIONS.md        # deploying, upgrading, backups, runbook
 │   └── EXAMPLES.md          # full worked walkthrough
+├── deploy/                  # systemd unit, launchd plist
 └── scripts/                 # dev.sh, smoke_test.sh
 ```
 

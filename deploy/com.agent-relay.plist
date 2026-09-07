@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd job for macOS, for a relay running on a Mac that is always on.
+
+    cp deploy/com.agent-relay.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.agent-relay.plist
+    launchctl list | grep agent-relay
+    tail -f /usr/local/var/log/agent-relay.log
+
+  Edit the two paths below to match your checkout. Configuration belongs in the
+  .env file next to it, not in here.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.agent-relay</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/uv</string>
+        <string>run</string>
+        <string>--frozen</string>
+        <string>agent-relay</string>
+        <string>serve</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/CHANGEME/agent-coordination-hub</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>AGENT_RELAY_HOST</key>
+        <string>0.0.0.0</string>
+        <key>AGENT_RELAY_PORT</key>
+        <string>8077</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/usr/local/var/log/agent-relay.log</string>
+    <key>StandardErrorPath</key>
+    <string>/usr/local/var/log/agent-relay.err.log</string>
+</dict>
+</plist>
