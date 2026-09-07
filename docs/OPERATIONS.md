@@ -433,12 +433,14 @@ Read this before putting the relay anywhere but a trusted network.
 
 - **The network is the security boundary.** The relay is built for a LAN, a VPN or localhost.
   It is not hardened for the public internet, and nothing in it is a substitute for that.
-- **Authentication is one optional shared token.** With `AGENT_RELAY_API_TOKEN` set, every
-  request must send `Authorization: Bearer <token>`; with it unset there is no auth at all. One
-  token for every agent and every human. That is the whole system.
-- **There is no per-agent identity.** `agent` is a string in the request body. Anyone who can
-  reach the API can post as `leo-codex`, `force`-release anyone's claim, and read every event in
-  every project. The token proves you are on the team; nothing proves who you are.
+- **Authentication is one of three modes.** Tailnet identity (`AGENT_RELAY_TAILSCALE_AUTH`), a
+  shared token (`AGENT_RELAY_API_TOKEN`), or open. See §6.1 — if everyone reaches the relay over
+  Tailscale, identity is strictly better than the token and costs nothing to run.
+- **There is still no per-*agent* identity.** `agent` is a string in the request body, and that
+  is deliberate: one person legitimately runs `leo-claude` and `leo-codex` at once. What tailnet
+  identity pins down is the *human* behind them. With only a shared token, nothing proves either.
+- **Anyone who gets in can force-release a claim.** There is no ownership check beyond the
+  claim's own `agent` field, which the caller supplies.
 - **Everything is readable to anyone who gets in.** There is no per-project access control and
   no redaction of stored content. Do not put secrets in event summaries, details or artifacts —
   the log is append-only, so there is no edit and no delete, and events are mirrored to Slack.
@@ -458,6 +460,47 @@ If you need more than this — real per-user auth, per-project isolation, an aud
 read what — this is the wrong tool, and saying so is cheaper than bolting it on.
 
 ---
+
+### 6.1 Tailnet identity
+
+If every caller reaches the relay over Tailscale — the deployment this is built for — you can
+delete the shared token entirely:
+
+```bash
+AGENT_RELAY_TAILSCALE_AUTH=true
+AGENT_RELAY_OWNER_MAP=leonardo.gameplay666@gmail.com=leonardo,nic@example.com=niccolo
+```
+
+The peer is authenticated by WireGuard before the first byte reaches the relay, so the relay just
+asks `tailscale whois` who owns the calling address. What that buys:
+
+| | Shared token | Tailnet identity |
+|---|---|---|
+| Secret to distribute and rotate | Yes | **None** |
+| Who is calling | Unknown | The actual account |
+| `human_owner` | Self-declared, can be anything | **Set from identity; a declared value is overridden** |
+| Works off-tailnet | Yes | No — that is the point |
+
+That last row is the substantive change. With a token, an agent can post `human_owner: andrea`
+and the log will say andrea. With identity on, the relay overwrites it with who the caller
+actually is. Verified against the real tailnet: a request declaring `andrea` from Leonardo's
+machine is recorded as `leonardo`.
+
+**Two conditions, both hard:**
+
+1. **The relay must be reached directly over the tailnet.** Behind a reverse proxy every request
+   appears to come from the proxy, and `X-Forwarded-For` is set by the caller — trusting it would
+   let anyone assume any identity, so the relay reads the socket peer only and refuses everyone
+   instead. That is the safe failure, but it means "put nginx in front of it" breaks identity.
+2. **The `tailscale` CLI must be on the relay host's PATH** (`AGENT_RELAY_TAILSCALE_BINARY` to
+   override). Lookups are cached for five minutes, so this is not a subprocess per request.
+
+Set `AGENT_RELAY_ALLOW_TOKEN=true` to keep accepting the shared token as a fallback. It is off by
+default on purpose: with identity on, a token that still works is a way to stay anonymous.
+
+Anything on the relay host itself resolves to the host's own tailnet identity, so a shell on that
+box is equivalent to being that user. That is the same trust you already grant by running the
+service there.
 
 ## 7. What the coordinator costs
 

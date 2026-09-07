@@ -594,11 +594,33 @@ GitHub unconfigured those two endpoints return `503` and everything else is unaf
 
 ### Security
 
-The MVP assumes a trusted environment: localhost, a LAN, a VPN, or a Tailscale network.
-Set `AGENT_RELAY_API_TOKEN` for a shared bearer token if you want a speed bump —
-`/health` stays open for monitoring, everything else returns `401`. That is a speed
-bump, not an authentication system; there are no per-agent identities and an agent can
-post as any name. Do not expose this to the public internet.
+The relay assumes a trusted environment: localhost, a LAN, a VPN, or a Tailscale
+network. Do not expose it to the public internet. Three auth modes:
+
+**Tailnet identity** — the best option if everyone connects over Tailscale:
+
+```bash
+AGENT_RELAY_TAILSCALE_AUTH=true
+AGENT_RELAY_OWNER_MAP=leonardo.gameplay666@gmail.com=leonardo,nic@example.com=niccolo
+```
+
+The peer is authenticated by WireGuard before the relay sees it, so the relay asks
+`tailscale whois` who owns the calling address. No secret to distribute or rotate —
+and `human_owner` stops being a self-declaration: post `human_owner: andrea` from
+Leonardo's machine and the relay records `leonardo`. Requires a direct tailnet
+connection; behind a reverse proxy the peer address is the proxy and
+`X-Forwarded-For` is caller-controlled, so identity mode refuses everyone rather than
+trust a spoofable header.
+
+**Shared token** — `AGENT_RELAY_API_TOKEN`. One token for the whole team, sent as
+`Authorization: Bearer …`. A speed bump, not an identity system: every caller is
+anonymous and can post as anyone.
+
+**Open** — the default, fine for localhost.
+
+`/health` stays reachable in every mode so monitoring works. Agent names are always
+self-declared, deliberately: one person runs several agents. What identity pins down
+is the human behind them.
 
 Tokens and webhook URLs live in `.env`, which is git-ignored, and are redacted from
 logs and from every API response.
